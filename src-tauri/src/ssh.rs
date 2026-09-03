@@ -1,0 +1,253 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use russh::client;
+use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
+use russh::ChannelMsg;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
+
+use crate::error::AppError;
+use crate::profile::ServerProfile;
+
+#[derive(Default)]
+pub struct ClientHandler {}
+
+impl client::Handler for ClientHandler {
+    type Error = russh::Error;
+
+    // 当前策略：信任服务器主机密钥（后续可加 known_hosts 校验）
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
+pub struct SshSession {
+    pub handle: client::Handle<ClientHandler>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnInfo {
+    pub host: String,
+    pub user: String,
+    pub server_version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CmdOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: u32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamChunk {
+    pub task_id: String,
+    pub kind: String, // "out" | "err"
+    pub data: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamDone {
+    pub task_id: String,
+    pub exit_code: u32,
+}
+
+impl SshSession {
+    pub async fn connect(profile: &ServerProfile) -> Result<Self, AppError> {
+        let config = Arc::new(client::Config {
+            inactivity_timeout: Some(Duration::from_secs(120)),
+            ..Default::default()
+        });
+        let mut handle = client::connect(config, (profile.host.as_str(), profile.port), ClientHandler {})
+            .await
+            .map_err(|e| AppError::Ssh(format!("connect {}: {}", profile.addr(), e)))?;
+
+        let auth = match &profile.auth {
+            crate::profile::AuthMethod::Password { password } => handle
+                .authenticate_password(&profile.user, password)
+                .await
+                .map_err(|e| AppError::Ssh(e.to_string()))?,
+            crate::profile::AuthMethod::Key { key_path, passphrase } => {
+                let key = load_secret_key(key_path, passphrase.as_deref())
+                    .map_err(|e| AppError::Auth(format!("load key {}: {e}", key_path)))?;
+                let hash = handle
+                    .best_supported_rsa_hash()
+                    .await
+                    .map_err(|e| AppError::Ssh(e.to_string()))?
+                    .flatten();
+                handle
+                    .authenticate_publickey(
+                        &profile.user,
+                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                    )
+                    .await
+                    .map_err(|e| AppError::Ssh(e.to_string()))?
+            }
+        };
+
+        if !auth.success() {
+            return Err(AppError::Auth(format!(
+                "auth failed for {}@{}",
+                profile.user,
+                profile.addr()
+            )));
+        }
+        Ok(Self { handle })
+    }
+
+    /// 执行短命令并收集全部输出
+    pub async fn run(&mut self, command: &str) -> Result<CmdOutput, AppError> {
+        let mut channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| AppError::Ssh(e.to_string()))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| AppError::Ssh(e.to_string()))?;
+
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        let mut code = None;
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => stdout.extend(&data),
+                ChannelMsg::ExtendedData { data, .. } => stderr.extend(&data),
+                ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+                _ => {}
+            }
+        }
+        Ok(CmdOutput {
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            exit_code: code.unwrap_or(255),
+        })
+    }
+
+    /// 执行长命令，输出经 Tauri 事件实时推送；结束时发 task://exit
+    pub async fn run_stream(
+        &mut self,
+        command: &str,
+        task_id: &str,
+        app: &AppHandle,
+    ) -> Result<u32, AppError> {
+        let mut channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| AppError::Ssh(e.to_string()))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| AppError::Ssh(e.to_string()))?;
+
+        let mut code = None;
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => {
+                    let _ = app.emit(
+                        "task://stream",
+                        StreamChunk {
+                            task_id: task_id.to_string(),
+                            kind: "out".into(),
+                            data: String::from_utf8_lossy(&data).into_owned(),
+                        },
+                    );
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    let _ = app.emit(
+                        "task://stream",
+                        StreamChunk {
+                            task_id: task_id.to_string(),
+                            kind: "err".into(),
+                            data: String::from_utf8_lossy(&data).into_owned(),
+                        },
+                    );
+                }
+                ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+                _ => {}
+            }
+        }
+        let exit_code = code.unwrap_or(255);
+        let _ = app.emit(
+            "task://exit",
+            StreamDone {
+                task_id: task_id.to_string(),
+                exit_code,
+            },
+        );
+        Ok(exit_code)
+    }
+}
+
+#[tauri::command]
+pub async fn ssh_connect(
+    state: State<'_, crate::AppState>,
+    profile: ServerProfile,
+) -> Result<ConnInfo, AppError> {
+    let mut session = SshSession::connect(&profile).await?;
+    let version = session
+        .run("cat /etc/issue 2>/dev/null | head -1")
+        .await
+        .ok()
+        .map(|o| o.stdout.trim().to_string())
+        .filter(|s| !s.is_empty());
+    state
+        .conns
+        .lock()
+        .await
+        .insert(profile.id.clone(), session);
+    Ok(ConnInfo {
+        host: profile.addr(),
+        user: profile.user,
+        server_version: version,
+    })
+}
+
+#[tauri::command]
+pub async fn ssh_disconnect(state: State<'_, crate::AppState>, id: String) -> Result<(), AppError> {
+    state.conns.lock().await.remove(&id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ssh_is_connected(state: State<'_, crate::AppState>, id: String) -> Result<bool, AppError> {
+    Ok(state.conns.lock().await.contains_key(&id))
+}
+
+#[tauri::command]
+pub async fn ssh_run(
+    state: State<'_, crate::AppState>,
+    id: String,
+    command: String,
+) -> Result<CmdOutput, AppError> {
+    let mut conns = state.conns.lock().await;
+    let Some(session) = conns.get_mut(&id) else {
+        return Err(AppError::NotConnected(id));
+    };
+    session.run(&command).await
+}
+
+#[tauri::command]
+pub async fn ssh_run_stream(
+    app: AppHandle,
+    state: State<'_, crate::AppState>,
+    id: String,
+    command: String,
+    task_id: String,
+) -> Result<u32, AppError> {
+    let mut conns = state.conns.lock().await;
+    let Some(session) = conns.get_mut(&id) else {
+        return Err(AppError::NotConnected(id));
+    };
+    session.run_stream(&command, &task_id, &app).await
+}
