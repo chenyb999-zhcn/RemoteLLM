@@ -27,3 +27,15 @@ impl From<reqwest::Error> for AppError {
         AppError::Other(format!("网络请求失败: {e}"))
     }
 }
+
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::Other(format!("JSON 解析失败: {e}"))
+    }
+}
+
+impl From<tauri::Error> for AppError {
+    fn from(e: tauri::Error) -> Self {
+        AppError::Other(e.to_string())
+    }
+}

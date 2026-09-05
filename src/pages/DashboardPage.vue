@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, h, onMounted } from "vue";
 import {
   NButton,
   NCard,
@@ -8,57 +8,30 @@ import {
   NGrid,
   NGridItem,
   NInputNumber,
+  NProgress,
   NResult,
   NSpace,
+  NSwitch,
   NTag,
   useMessage,
   type DataTableColumns,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { useServerStore } from "../stores/server";
-import { api, fmtBytes } from "../lib/api";
+import { useDashboardStore, metricKey } from "../stores/dashboard";
+import { fmtBytes } from "../lib/api";
 import type { GpuPoll, MetricSample, ProcRow } from "../lib/types";
 import LineChart from "../components/LineChart.vue";
 import type { Series } from "../components/LineChart.vue";
 
 const store = useServerStore();
-const { current, env, envLoading } = storeToRefs(store);
+const { env, envLoading } = storeToRefs(store);
+const dash = useDashboardStore();
+const { snaps, procs, pollError, metricsPort, metrics, metricsLoading, metricsErr } =
+  storeToRefs(dash);
 const message = useMessage();
 
-const POLL_MS = 3000;
-const MAX_POINTS = 120;
-
-const snaps = ref<GpuPoll[]>([]);
-const procs = ref<ProcRow[]>([]);
-const pollError = ref<string | null>(null);
-let timer: number | null = null;
-
-const metricsPort = ref(8000);
-const metrics = ref<MetricSample[]>([]);
-const metricsLoading = ref(false);
-const metricsErr = ref<string | null>(null);
-
-let polling = false;
-async function poll() {
-  if (polling) return;
-  polling = true;
-  const id = current.value?.id;
-  if (!id) {
-    polling = false;
-    return;
-  }
-  try {
-    const snap = await api.gpuPoll(id);
-    snaps.value.push(snap);
-    if (snaps.value.length > MAX_POINTS) snaps.value.shift();
-    procs.value = await api.gpuProcPoll(id);
-    pollError.value = null;
-  } catch (e: any) {
-    pollError.value = e?.message ?? JSON.stringify(e);
-  } finally {
-    polling = false;
-  }
-}
+const MAX_SELECTED = 8;
 
 onMounted(async () => {
   if (!env.value) {
@@ -68,12 +41,6 @@ onMounted(async () => {
       message.error(`环境检查失败: ${e?.message ?? JSON.stringify(e)}`);
     }
   }
-  await poll();
-  timer = window.setInterval(poll, POLL_MS);
-});
-
-onBeforeUnmount(() => {
-  if (timer) window.clearInterval(timer);
 });
 
 async function onRefreshEnv() {
@@ -84,19 +51,17 @@ async function onRefreshEnv() {
   }
 }
 
-async function onFetchMetrics() {
-  const id = current.value?.id;
-  if (!id) return;
-  metricsLoading.value = true;
-  metricsErr.value = null;
-  try {
-    metrics.value = await api.metricsPoll(id, metricsPort.value);
-  } catch (e: any) {
-    metricsErr.value = e?.message ?? JSON.stringify(e);
-    metrics.value = [];
-  } finally {
-    metricsLoading.value = false;
+function onFetchMetrics() {
+  return dash.fetchMetrics();
+}
+
+function onMetricsSelChange(keys: Array<string | number> | null) {
+  const next = (keys ?? []).filter((k): k is string => typeof k === "string");
+  if (next.length > MAX_SELECTED) {
+    message.warning(`最多同时勾选 ${MAX_SELECTED} 个指标上图`);
+    return;
   }
+  dash.setSelected(next);
 }
 
 const latest = computed(() => snaps.value[snaps.value.length - 1]);
@@ -135,19 +100,92 @@ const sysMemSeries = computed((): Series[] => [
   },
 ]);
 
-function stat(label: string, value: string, warn = false) {
-  return { label, value, warn };
+// ---------- 推理指标折线 ----------
+function shortLabel(key: string): string {
+  const i = key.indexOf("{");
+  const name = i > 0 ? key.slice(0, i) : key;
+  const labels = i > 0 ? key.slice(i + 1, key.length - 1) : "";
+  const short = name.replace(/^(llama_|llamacpp:|vllm:)/, "");
+  if (!labels) return short;
+  const parts = labels.split(",").map((s) => s.split("=")[1] ?? s);
+  return `${short} ${parts.join(",")}`.slice(0, 56);
 }
+
+const metricCharts = computed(() =>
+  dash.metricsSelected.map((key) => ({
+    key,
+    label: shortLabel(key),
+    series: {
+      label: shortLabel(key),
+      data: dash.metricsHistory.map((p) => ({ x: p.ts, y: p.values[key] ?? null })),
+    } as Series,
+  })),
+);
+
+// ---------- 环境卡片 ----------
+interface StatItem {
+  label: string;
+  value: string;
+  warn?: boolean;
+  title?: string;
+}
+
+const cpuStat = computed<StatItem>(() => {
+  const model = env.value?.cpuModel?.trim() || "";
+  const n = env.value?.cpuCount;
+  const value = model
+    ? n
+      ? `${model} (${n} 核)`
+      : model
+    : n
+      ? `${n} 核`
+      : "-";
+  return { label: "CPU", value, warn: n == null, title: model || undefined };
+});
+
+const disks = computed(() => env.value?.disks ?? []);
+const rootDisk = computed(() => disks.value.find((d) => d.mount === "/"));
+
+function diskPct(total: number | null, used: number | null): number {
+  if (!total || used == null) return 0;
+  return Math.min(100, Math.round((used / total) * 100));
+}
+
+const envStats = computed<StatItem[]>(() => {
+  const e = env.value;
+  if (!e) return [];
+  return [
+    { label: "系统", value: [e.os, e.kernel].filter(Boolean).join(" ") || "-" },
+    cpuStat.value,
+    {
+      label: "内存",
+      value: e.memTotal ? `${fmtBytes(e.memUsed)} / ${fmtBytes(e.memTotal)}` : "-",
+    },
+    {
+      label: disks.value.length > 1 ? `磁盘 (${disks.value.length} 分区)` : "磁盘 /",
+      value:
+        rootDisk.value?.total != null
+          ? `${fmtBytes(rootDisk.value.used)} / ${fmtBytes(rootDisk.value.total)}`
+          : "-",
+    },
+    { label: "Python", value: e.python ?? "-", warn: e.python == null },
+    { label: "CUDA", value: e.cuda ?? "未安装", warn: e.cuda == null },
+    { label: "GPU 驱动", value: e.driver || "未安装", warn: !e.driver },
+    { label: "Docker", value: e.docker ?? "未安装", warn: e.docker == null },
+  ];
+});
 
 const procColumns: DataTableColumns<ProcRow> = [
   { title: "GPU", key: "gpu", width: 70 },
-  { title: "PID", key: "pid", width: 110 },
-  { title: "计算单元 %", key: "itc", width: 110 },
-  { title: "显存带宽 %", key: "gmc", width: 110 },
-  { title: "显存占用", key: "mem", render: (r) => `${r.mem} MiB` },
+  { title: "PID", key: "pid", width: 100 },
+  { title: "计算单元 %", key: "sm", width: 110 },
+  { title: "显存带宽 %", key: "memBw", width: 110 },
+  { title: "显存占用", key: "mem", width: 110, render: (r) => (r.mem != null ? `${r.mem} MiB` : "-") },
+  { title: "进程", key: "command", ellipsis: { tooltip: true } },
 ];
 
 const metricColumns: DataTableColumns<MetricSample> = [
+  { type: "selection" },
   {
     title: "指标名",
     key: "name",
@@ -193,30 +231,45 @@ const metricColumns: DataTableColumns<MetricSample> = [
 
     <!-- 环境信息 -->
     <template v-if="env">
-      <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:3 l:4" responsive="screen">
-        <n-grid-item
-          v-for="(it, i) in [
-            stat('系统', [env.os, env.kernel].filter(Boolean).join(' ')),
-            stat('CPU', env.cpuCount ? `${env.cpuCount} 核` : '-', env.cpuCount == null),
-            stat('内存', env.memTotal ? `${fmtBytes(env.memUsed)} / ${fmtBytes(env.memTotal)}` : '-'),
-            stat('磁盘 /', env.diskTotal ? `${fmtBytes(env.diskUsed)} / ${fmtBytes(env.diskTotal)}` : '-'),
-            stat('Python', env.python ?? '-', env.python == null),
-            stat('CUDA', env.cuda ?? '未安装', env.cuda == null),
-            stat('GPU 驱动', env.driver || '未安装', !env.driver),
-            stat('Docker', env.docker ?? '未安装', env.docker == null),
-          ]"
-          :key="i"
-        >
-          <n-card size="small">
+      <n-grid :x-gap="8" :y-gap="8" cols="2 m:4" responsive="screen">
+        <n-grid-item v-for="(it, i) in envStats" :key="i">
+          <n-card size="small" class="stat-card" :content-style="{ padding: '8px 12px' }">
             <div class="stat-label">{{ it.label }}</div>
             <n-tag
               :type="it.warn ? 'warning' : 'default'"
               size="small"
               class="stat-value"
               :bordered="false"
+              :title="it.title || it.value"
             >
               {{ it.value }}
             </n-tag>
+          </n-card>
+        </n-grid-item>
+        <!-- 多分区磁盘明细 -->
+        <n-grid-item v-if="disks.length > 1" span="2 m:4">
+          <n-card size="small" class="stat-card" :content-style="{ padding: '8px 12px' }">
+            <div class="stat-label">磁盘分区明细</div>
+            <div
+              v-for="d in disks.slice(0, 6)"
+              :key="d.mount"
+              class="disk-row"
+              :title="`${d.mount} (${d.fs})`"
+            >
+              <span class="disk-mount">{{ d.mount }}</span>
+              <n-progress
+                type="line"
+                :percentage="diskPct(d.total, d.used)"
+                :height="4"
+                :rail-size="3"
+                :show-indicator="false"
+                class="disk-bar"
+              />
+              <span class="disk-text">
+                {{ fmtBytes(d.used) }} / {{ fmtBytes(d.total) }} ({{ diskPct(d.total, d.used) }}%)
+              </span>
+            </div>
+            <div v-if="disks.length > 6" class="disk-more">… 其余 {{ disks.length - 6 }} 个分区</div>
           </n-card>
         </n-grid-item>
       </n-grid>
@@ -306,30 +359,87 @@ const metricColumns: DataTableColumns<MetricSample> = [
         >
           抓取
         </n-button>
+        <n-switch v-model:value="dash.metricsAuto" size="small" />
+        <span style="color: #999; font-size: 12px">自动刷新（跟随轮询间隔，连续抓取画折线）</span>
         <span v-if="metricsErr" class="err-text">{{ metricsErr }}</span>
       </n-space>
+
+      <!-- 勾选指标的折线图（每个指标一张小图，避免量纲混用） -->
+      <template v-if="metricCharts.length && dash.metricsHistory.length > 1">
+        <n-grid :x-gap="12" :y-gap="12" cols="1 m:2" responsive="screen" style="margin-bottom: 12px">
+          <n-grid-item v-for="c in metricCharts" :key="c.key">
+            <div class="chart-title" :title="c.key">{{ c.label }}</div>
+            <line-chart :series="[c.series]" :height="110" />
+          </n-grid-item>
+        </n-grid>
+      </template>
+      <div
+        v-else-if="dash.metricsSelected.length && dash.metricsHistory.length <= 1"
+        class="chart-title"
+        style="margin-bottom: 12px"
+      >
+        已勾选 {{ dash.metricsSelected.length }} 个指标，再抓取一次即可出图
+      </div>
+
       <n-data-table
         :columns="metricColumns"
         :data="metrics"
         :bordered="false"
         size="small"
         :max-height="320"
+        :row-key="(m: MetricSample) => metricKey(m)"
+        :checked-row-keys="dash.metricsSelected"
+        @update:checked-row-keys="onMetricsSelChange"
       />
     </n-card>
   </div>
 </template>
 
 <style scoped>
+.stat-card {
+  min-width: 0;
+}
 .stat-label {
-  font-size: 12px;
+  font-size: 11px;
   color: #999;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .stat-value {
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.disk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.disk-mount {
+  /* 固定列宽：所有行的进度条起点/终点左右对齐 */
+  flex: 0 0 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ccc;
+}
+.disk-bar {
+  flex: 1 1 auto;
+  min-width: 60px;
+}
+.disk-text {
+  flex: 0 0 210px;
+  text-align: right;
+  white-space: nowrap;
+  color: #999;
+  font-size: 11px;
+}
+.disk-more {
+  font-size: 11px;
+  color: #777;
+  margin-top: 2px;
 }
 .chart-title {
   font-size: 13px;

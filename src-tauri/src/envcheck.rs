@@ -12,7 +12,7 @@ nproc; grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2
 echo "==MEM=="
 free -b | awk '/^Mem:/ {print $2, $3}'
 echo "==DISK=="
-df -B1 / | awk 'NR==2 {print $2, $3}'
+df -B1 -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs --output=target,fstype,size,used 2>/dev/null | tail -n +2
 echo "==PYTHON=="
 python3 --version 2>/dev/null
 echo "==CUDA=="
@@ -38,6 +38,18 @@ pub struct GpuInfo {
     pub util: Option<u32>,
 }
 
+/// 单个磁盘分区
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskInfo {
+    /// 挂载点
+    pub mount: String,
+    /// 文件系统类型
+    pub fs: String,
+    pub total: Option<u64>,
+    pub used: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvInfo {
@@ -49,6 +61,8 @@ pub struct EnvInfo {
     pub mem_used: Option<u64>,
     pub disk_total: Option<u64>,
     pub disk_used: Option<u64>,
+    /// 全部磁盘分区（tmpfs/devtmpfs 等已排除）
+    pub disks: Vec<DiskInfo>,
     pub python: Option<String>,
     pub cuda: Option<String>,
     pub cuda_path: Option<String>,
@@ -107,6 +121,26 @@ fn parse_two_u64(s: &str) -> (Option<u64>, Option<u64>) {
     )
 }
 
+/// df --output=target,fstype,size,used 行 → DiskInfo（无效行跳过）
+fn parse_disks(s: &str) -> Vec<DiskInfo> {
+    s.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() < 4 {
+                return None;
+            }
+            Some(DiskInfo {
+                mount: f[0].to_string(),
+                fs: f[1].to_string(),
+                total: f[2].parse().ok(),
+                used: f[3].parse().ok(),
+            })
+        })
+        .collect()
+}
+
 pub async fn env_check(session: &mut SshSession) -> Result<EnvInfo, AppError> {
     let out = session.run(ENV_SCRIPT).await?;
     let raw = out.stdout.as_str();
@@ -125,9 +159,11 @@ pub async fn env_check(session: &mut SshSession) -> Result<EnvInfo, AppError> {
         .map(|s| parse_two_u64(s))
         .unwrap_or((None, None));
 
-    let (disk_total, disk_used) = section(raw, "DISK")
-        .map(|s| parse_two_u64(s))
-        .unwrap_or((None, None));
+    let disks = section(raw, "DISK").map(parse_disks).unwrap_or_default();
+    // 兼容旧字段：取根分区的容量
+    let root = disks.iter().find(|d| d.mount == "/");
+    let disk_total = root.and_then(|d| d.total);
+    let disk_used = root.and_then(|d| d.used);
 
     let python = section(raw, "PYTHON").map(|s| s.trim().to_string());
 
@@ -150,6 +186,7 @@ pub async fn env_check(session: &mut SshSession) -> Result<EnvInfo, AppError> {
         mem_used,
         disk_total,
         disk_used,
+        disks,
         python,
         cuda,
         cuda_path,
@@ -169,4 +206,30 @@ pub async fn env_check_cmd(
         return Err(AppError::NotConnected(id));
     };
     env_check(session).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_multi_disks() {
+        let raw = "/      ext4  9999 1111\n/mnt   btrfs 8888888 7777\n";
+        let d = parse_disks(raw);
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0].mount, "/");
+        assert_eq!(d[0].fs, "ext4");
+        assert_eq!(d[0].total, Some(9999));
+        assert_eq!(d[0].used, Some(1111));
+        assert_eq!(d[1].mount, "/mnt");
+        assert_eq!(d[1].fs, "btrfs");
+        assert_eq!(d[1].total, Some(8888888));
+    }
+
+    #[test]
+    fn parses_disks_skips_garbage() {
+        let d = parse_disks("\n  \nonlyonefield\n/ x 1 2\n");
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].mount, "/");
+    }
 }

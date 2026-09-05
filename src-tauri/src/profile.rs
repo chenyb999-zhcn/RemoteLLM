@@ -24,6 +24,9 @@ pub struct ServerProfile {
     /// 服务器上的工作根目录（模型、PID、日志都放这里）
     #[serde(default = "default_base_dir")]
     pub base_dir: String,
+    /// 独立模型目录（空 = 用全局设置 modelDir，再空 = baseDir/models）
+    #[serde(default)]
+    pub models_dir: Option<String>,
     /// 1Cat-vLLM git 仓库地址（原生安装用）
     #[serde(default)]
     pub onecat_repo: Option<String>,
@@ -40,22 +43,55 @@ fn default_base_dir() -> String {
     "~/RemoteLLM".into()
 }
 
+/// 路径归一化：去掉尾部斜杠；前导 ~/ 换成 $HOME（bash 对引号内的 ~ 不做展开，
+/// 直接传 "~/x" 给 cd 会失败，而 $HOME 在 shell 命令字符串中会被展开）
+fn shell_path(p: &str) -> String {
+    let t = p.trim().trim_end_matches('/');
+    if t == "~" {
+        "$HOME".into()
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        format!("$HOME/{rest}")
+    } else {
+        t.to_string()
+    }
+}
+
 impl ServerProfile {
     fn root(&self) -> &str {
         self.base_dir.trim_end_matches('/')
     }
-    pub fn models_dir(&self) -> String {
-        format!("{}/models", self.root())
+    pub fn default_models_dir(&self) -> String {
+        shell_path(&format!("{}/models", self.root()))
     }
     pub fn run_dir(&self) -> String {
-        format!("{}/run", self.root())
+        shell_path(&format!("{}/run", self.root()))
     }
     pub fn logs_dir(&self) -> String {
-        format!("{}/logs", self.root())
+        shell_path(&format!("{}/logs", self.root()))
     }
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+}
+
+/// 生效的模型目录：档案覆盖 > 全局设置 > baseDir/models
+pub fn effective_models_dir(profile: &ServerProfile, settings: &crate::settings::AppSettings) -> String {
+    let dir = profile
+        .models_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .or_else(|| {
+            let g = settings.model_dir.trim();
+            if g.is_empty() {
+                None
+            } else {
+                Some(g)
+            }
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| profile.default_models_dir());
+    shell_path(&dir)
 }
 
 const STORE_KEY: &str = "profiles";

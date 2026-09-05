@@ -15,8 +15,9 @@ const props = withDefaults(
     yLabel?: string;
     yMax?: number | null;
     fill?: boolean;
+    height?: number;
   }>(),
-  { fill: false, yMax: null },
+  { fill: false, yMax: null, height: 190 },
 );
 
 const data = computed(() => ({
@@ -46,7 +47,18 @@ const options = computed<any>(() => ({
     x: {
       type: "time",
       time: { tooltipFormat: "HH:mm:ss" },
-      ticks: { maxTicksLimit: 6, maxRotation: 0 },
+      ticks: {
+        maxTicksLimit: 6,
+        maxRotation: 0,
+        // 24 小时制，避免 locale 默认带 am/pm
+        callback: (value: number) =>
+          new Date(value).toLocaleTimeString("zh-CN", {
+            hour12: false,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+      },
     },
     y: {
       beginAtZero: true,
@@ -62,14 +74,13 @@ const options = computed<any>(() => ({
 </script>
 
 <template>
-  <div class="chart-wrap">
+  <div class="chart-wrap" :style="{ height: height + 'px' }">
     <Line :data="data" :options="options" />
   </div>
 </template>
 
 <style scoped>
 .chart-wrap {
-  height: 190px;
   width: 100%;
   position: relative;
 }

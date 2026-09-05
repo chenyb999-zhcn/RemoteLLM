@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { api } from "../lib/api";
+import { useSettingsStore } from "./settings";
 import type { ConnInfo, EnvInfo, ServerProfile } from "../lib/types";
 
 export const useServerStore = defineStore("server", {
@@ -39,6 +40,11 @@ export const useServerStore = defineStore("server", {
         this.connInfo = await api.connect(profile);
         this.currentId = profile.id;
         this.env = null;
+        // 记录最后连接的服务器（自动连接用）
+        const settings = useSettingsStore();
+        await settings.load();
+        settings.value.lastProfileId = profile.id;
+        await settings.save();
       } finally {
         this.connecting = false;
       }

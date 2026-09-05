@@ -41,6 +41,7 @@ const form = reactive({
   keyPath: "",
   passphrase: "",
   baseDir: "~/RemoteLLM",
+  modelsDir: "",
   onecatRepo: "",
   onecatImage: "",
   advanced: false,
@@ -80,6 +81,7 @@ function openAdd() {
     keyPath: "",
     passphrase: "",
     baseDir: "~/RemoteLLM",
+    modelsDir: "",
     onecatRepo: "",
     onecatImage: "",
     advanced: false,
@@ -99,6 +101,7 @@ function openEdit(p: ServerProfile) {
     keyPath: p.auth.type === "key" ? p.auth.keyPath : "",
     passphrase: p.auth.type === "key" ? (p.auth.passphrase ?? "") : "",
     baseDir: p.baseDir,
+    modelsDir: p.modelsDir ?? "",
     onecatRepo: p.onecatRepo ?? "",
     onecatImage: p.onecatImage ?? "",
     advanced: false,
@@ -119,6 +122,7 @@ function buildProfile(): ServerProfile {
         ? { type: "password", password: form.password }
         : { type: "key", keyPath: form.keyPath, passphrase: form.passphrase || null },
     baseDir: form.baseDir,
+    modelsDir: form.modelsDir.trim() || null,
     onecatRepo: form.onecatRepo || null,
     onecatImage: form.onecatImage || null,
   };
@@ -202,7 +206,10 @@ onMounted(() => store.loadProfiles());
   <div class="page">
     <n-card title="GPU 服务器" style="width: 100%">
       <template #header-extra>
-        <n-button type="primary" @click="openAdd">添加服务器</n-button>
+        <n-space>
+          <n-button quaternary @click="router.push('/settings')">设置</n-button>
+          <n-button type="primary" @click="openAdd">添加服务器</n-button>
+        </n-space>
       </template>
       <n-data-table :columns="columns" :data="profiles" :bordered="false" />
     </n-card>
@@ -256,6 +263,12 @@ onMounted(() => store.loadProfiles());
           </n-button>
         </n-form-item>
         <template v-if="form.advanced">
+          <n-form-item label="模型目录">
+            <n-input
+              v-model:value="form.modelsDir"
+              placeholder="留空 = 用全局设置 / baseDir/models"
+            />
+          </n-form-item>
           <n-form-item label="1Cat 仓库">
             <n-input
               v-model:value="form.onecatRepo"

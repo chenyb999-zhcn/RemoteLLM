@@ -5,7 +5,7 @@ use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::ChannelMsg;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::AppError;
 use crate::profile::ServerProfile;
@@ -133,6 +133,42 @@ impl SshSession {
         })
     }
 
+    /// 后台执行长命令：调用方立即返回（task_id 由调用方生成），
+    /// 流期间持有 conns 锁（其他命令等待），结束时发 task://exit
+    pub fn spawn_stream(app: AppHandle, profile_id: String, command: String, task_id: String) {
+        tokio::spawn(async move {
+            let fail = |code: u32, extra: Option<String>| {
+                if let Some(msg) = extra {
+                    let _ = app.emit(
+                        "task://stream",
+                        StreamChunk {
+                            task_id: task_id.clone(),
+                            kind: "err".into(),
+                            data: msg,
+                        },
+                    );
+                }
+                let _ = app.emit(
+                    "task://exit",
+                    StreamDone {
+                        task_id: task_id.clone(),
+                        exit_code: code,
+                    },
+                );
+            };
+            let state = app.state::<crate::AppState>();
+            let mut conns = state.conns.lock().await;
+            let Some(session) = conns.get_mut(&profile_id) else {
+                fail(255, Some(format!("\n[未连接到服务器: {profile_id}]\n")));
+                return;
+            };
+            match session.run_stream(&command, &task_id, &app).await {
+                Ok(_) => {}
+                Err(e) => fail(255, Some(format!("\n[SSH 错误: {e}]\n"))),
+            }
+        });
+    }
+
     /// 执行长命令，输出经 Tauri 事件实时推送；结束时发 task://exit
     pub async fn run_stream(
         &mut self,
@@ -238,16 +274,7 @@ pub async fn ssh_run(
 }
 
 #[tauri::command]
-pub async fn ssh_run_stream(
-    app: AppHandle,
-    state: State<'_, crate::AppState>,
-    id: String,
-    command: String,
-    task_id: String,
-) -> Result<u32, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&id) else {
-        return Err(AppError::NotConnected(id));
-    };
-    session.run_stream(&command, &task_id, &app).await
+pub async fn ssh_run_stream(app: AppHandle, id: String, command: String, task_id: String) {
+    // 立即返回；后台流式执行（未连接时 spawn 会立即发 task://exit）
+    SshSession::spawn_stream(app, id, command, task_id);
 }

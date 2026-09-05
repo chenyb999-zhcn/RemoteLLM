@@ -36,8 +36,10 @@ import {
 import { storeToRefs } from "pinia";
 import { useServerStore } from "../stores/server";
 import { useInstanceStore } from "../stores/instance";
+import { useSettingsStore } from "../stores/settings";
 import { api, onTaskStream } from "../lib/api";
-import type { InstanceConfig } from "../lib/types";
+import DockerInstaller from "../components/DockerInstaller.vue";
+import type { DockerStatus, InstanceConfig, LocalImage } from "../lib/types";
 
 interface ParamDef {
   key: string;
@@ -91,7 +93,7 @@ const FW_META: Record<string, FwMeta> = {
     label: "SGLang",
     desc: "结构化生成优化的推理框架",
     defaultPort: 30000,
-    dockerImage: "lmsysorg/sglang:latest",
+    dockerImage: "lmsysorg/sglang:latest-cu129",
     params: [
       { key: "tp", label: "张量并行 TP", type: "number", default: 1 },
       { key: "memFractionStatic", label: "mem-fraction-static", type: "number", default: 0.85, step: 0.05 },
@@ -104,7 +106,7 @@ const FW_META: Record<string, FwMeta> = {
     label: "llama.cpp",
     desc: "GGUF 量化模型推理（llama-server）",
     defaultPort: 8080,
-    dockerImage: "ggml-org/llama.cpp:server",
+    dockerImage: "ghcr.io/ggml-org/llama.cpp:server-cuda",
     params: [
       { key: "bin", label: "命令", type: "text", default: "llama-server", nativeOnly: true },
       { key: "ngl", label: "GPU 层数 -ngl", type: "number", default: 99 },
@@ -117,6 +119,8 @@ const FW_META: Record<string, FwMeta> = {
 };
 
 const serverStore = useServerStore();
+const settingsStore = useSettingsStore();
+const { value: settings } = storeToRefs(settingsStore);
 const store = useInstanceStore();
 const { current } = storeToRefs(serverStore);
 const {
@@ -141,9 +145,17 @@ onMounted(async () => {
   if (current.value) {
     await store.detect(current.value.id);
     await store.load();
+    void loadDocker();
   }
   statusTimer = window.setInterval(() => store.refreshStatuses(), 5000);
 });
+
+watch(
+  () => current.value?.id,
+  (id) => {
+    if (id) void loadDocker();
+  },
+);
 
 onBeforeUnmount(() => {
   if (statusTimer) window.clearInterval(statusTimer);
@@ -384,7 +396,6 @@ const detectionCards = computed(() =>
       version: d?.version ?? null,
       note: d?.note ?? null,
       nativeTool: NATIVE_TOOL[fw],
-      dockerTool: DOCKER_TOOL[fw],
     };
   }),
 );
@@ -396,13 +407,6 @@ const NATIVE_TOOL: Record<string, string> = {
   sglang: "sglang",
   "llama-cpp": "llama-cpp",
 };
-const DOCKER_TOOL: Record<string, string> = {
-  vllm: "docker-vllm",
-  "1cat-vllm": "docker-vllm",
-  sglang: "docker-sglang",
-  "llama-cpp": "docker-llama",
-};
-
 const installShow = ref(false);
 const installScript = ref("");
 const installTool = ref("");
@@ -456,7 +460,245 @@ function closeInstall() {
 
 onBeforeUnmount(() => {
   cancelInstall.value?.();
+  cancelPull.value?.();
 });
+
+// ---------- Docker 镜像 ----------
+const dockerInstallerRef = ref<InstanceType<typeof DockerInstaller> | null>(null);
+const dockerStatus = ref<DockerStatus | null>(null);
+const localImages = ref<LocalImage[]>([]);
+const imagesLoading = ref(false);
+const customImage = ref("");
+const pulling = ref(false);
+const pullImage = ref("");
+const pullShow = ref(false);
+const pullStream = ref("");
+const pullDone = ref<number | null>(null);
+const cancelPull = ref<null | (() => Promise<void>)>(null);
+
+async function loadDocker() {
+  const pid = current.value?.id;
+  if (!pid) return;
+  imagesLoading.value = true;
+  try {
+    const [st, imgs] = await Promise.all([
+      api.checkDocker(pid),
+      api.listDockerImages(pid).catch(() => [] as LocalImage[]),
+    ]);
+    dockerStatus.value = st;
+    localImages.value = imgs;
+  } catch {
+    dockerStatus.value = null;
+  } finally {
+    imagesLoading.value = false;
+  }
+}
+
+const canUseDocker = computed(() => !!dockerStatus.value?.usable);
+
+const gpuTagText = computed(() => {
+  const s = dockerStatus.value;
+  if (!s?.installed || !s.usable) return "";
+  if (s.gpuRuntime) return "GPU 运行时就绪";
+  if (s.gpuRuntimeDetail === "ctk") return "GPU 工具链已装，docker 未配置";
+  if (s.gpuRuntimeDetail === "bin") return "GPU 运行时二进制存在，未注册";
+  return "GPU 运行时未安装";
+});
+
+const gpuTesting = ref(false);
+const gpuTestShow = ref(false);
+const gpuTestOut = ref("");
+const gpuTestOk = ref<boolean | null>(null);
+
+async function doGpuTest() {
+  const pid = current.value?.id;
+  if (!pid || gpuTesting.value) return;
+  gpuTesting.value = true;
+  try {
+    const out = await api.dockerGpuTest(pid);
+    gpuTestOut.value = out;
+    gpuTestOk.value = !out.includes("NO_NVIDIA_IMAGE") && /EXIT=0\b/.test(out);
+    gpuTestShow.value = true;
+  } catch (e: any) {
+    message.error(`GPU 测试失败: ${e?.message ?? JSON.stringify(e)}`);
+  } finally {
+    gpuTesting.value = false;
+  }
+}
+
+const builtinImages = computed(() => {
+  const p = current.value;
+  const onecat = p?.onecatImage?.trim() || "vllm/vllm-openai:latest";
+  return [
+    { label: "1Cat-vLLM", image: onecat, isDefault: true },
+    { label: "vLLM", image: "vllm/vllm-openai:latest", isDefault: false },
+    { label: "SGLang", image: "lmsysorg/sglang:latest-cu129", isDefault: false },
+    { label: "llama.cpp", image: "ghcr.io/ggml-org/llama.cpp:server-cuda", isDefault: false },
+  ];
+});
+
+function imageState(img: string): string | null {
+  const found = localImages.value.find((i) => i.name === img);
+  return found ? found.size ?? "已拉取" : null;
+}
+
+interface ImageRow {
+  label: string;
+  image: string;
+  isDefault: boolean;
+  state: string | null;
+}
+
+const imageRows = computed<ImageRow[]>(() =>
+  builtinImages.value.map((b) => ({ ...b, state: imageState(b.image) })),
+);
+
+const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
+  {
+    title: "框架",
+    key: "label",
+    width: 150,
+    render: (r) =>
+      h(
+        NSpace,
+        { size: 4 },
+        {
+          default: () => [
+            r.label,
+            ...(r.isDefault
+              ? [h(NTag, { size: "small", type: "info" }, { default: () => "默认" })]
+              : []),
+          ],
+        },
+      ),
+  },
+  { title: "镜像地址", key: "image", ellipsis: { tooltip: true } },
+  {
+    title: "本地状态",
+    key: "state",
+    width: 140,
+    render: (r) =>
+      r.state
+        ? h(NTag, { size: "small", type: "success" }, { default: () => `已拉取 ${r.state}` })
+        : h(NTag, { size: "small" }, { default: () => "未拉取" }),
+  },
+  {
+    title: "操作",
+    key: "actions",
+    width: 100,
+    render: (r) =>
+      h(NButton, {
+        size: "small",
+        type: "primary",
+        ghost: true,
+        disabled: !!r.state || pulling.value || !canUseDocker.value,
+        loading: pulling.value && pullImage.value === r.image,
+        onClick: () => doPull(r.image),
+      }, { default: () => "拉取" }),
+  },
+]);
+
+async function doPull(image: string) {
+  const pid = current.value?.id;
+  if (!pid || !image.trim() || pulling.value) return;
+  // daemon 代理守卫：全局代理启用且 daemon 代理不一致 → 先配置 daemon 再继续拉取
+  if (settings.value.proxyEnabled) {
+    const want = settings.value.proxyUrl.trim();
+    if (want) {
+      let st = dockerStatus.value;
+      try {
+        st = await api.checkDocker(pid);
+        dockerStatus.value = st;
+      } catch {
+        /* 沿用已有状态 */
+      }
+      const cur = st?.daemonProxy ?? null;
+      if (st && cur !== want) {
+        dialog.warning({
+          title: "配置 Docker 拉取代理",
+          content: `Docker daemon 当前代理：${cur ?? "未配置"}。将配置为 ${want}（写入 systemd 配置并重启 docker，正在运行的容器会中断），完成后自动继续拉取。`,
+          positiveText: "配置并拉取",
+          negativeText: "取消",
+          onPositiveClick: () => {
+            pendingPull.value = image.trim();
+            dockerInstallerRef.value?.askProxy(pid, st, want);
+          },
+        });
+        return;
+      }
+    }
+  }
+  await startPull(pid, image.trim());
+}
+
+const pendingPull = ref<string | null>(null);
+
+async function startPull(pid: string, image: string) {
+  try {
+    const taskId = await api.dockerPullStart(pid, image);
+    pullImage.value = image;
+    pullStream.value = "";
+    pullDone.value = null;
+    pullShow.value = true;
+    pulling.value = true;
+    cancelPull.value = await onTaskStream(
+      taskId,
+      (c) => {
+        pullStream.value += c.data;
+      },
+      (d) => {
+        pullDone.value = d.exitCode;
+        pulling.value = false;
+        if (d.exitCode === 0) void loadDocker();
+      },
+    );
+  } catch (e: any) {
+    message.error(`拉取失败: ${e?.message ?? JSON.stringify(e)}`);
+  }
+}
+
+function closePull() {
+  pullShow.value = false;
+  cancelPull.value?.();
+  cancelPull.value = null;
+  pulling.value = false;
+}
+
+function askInstallDocker() {
+  const p = current.value;
+  const st = dockerStatus.value;
+  if (p && st) dockerInstallerRef.value?.askInstall(p.id, st);
+}
+
+function askAuthorizeDocker() {
+  const p = current.value;
+  const st = dockerStatus.value;
+  if (p && st) dockerInstallerRef.value?.askAuthorize(p.id, st);
+}
+
+/** Docker 处理流结束（成功后已消费/取消）：清掉挂起的拉取，避免误触发 */
+function onDockerFlowDone() {
+  pendingPull.value = null;
+}
+
+async function onDockerSuccess() {
+  const p = current.value;
+  // 先同步取走挂起的拉取，避免 done 事件先清理
+  const img = pendingPull.value;
+  pendingPull.value = null;
+  if (!p) return;
+  try {
+    await serverStore.disconnect();
+    await serverStore.connect(p);
+  } catch (e: any) {
+    message.error(`重连失败: ${e?.message ?? JSON.stringify(e)}`);
+  }
+  // daemon 代理配置成功 → 刷新状态并继续挂起的拉取
+  if (img) {
+    void loadDocker();
+    await startPull(p.id, img);
+  }
+}
 
 const visibleParams = computed(() =>
   meta.value.params.filter((p) => {
@@ -465,12 +707,111 @@ const visibleParams = computed(() =>
     return true;
   }),
 );
+
+function builtinImageOf(fw: string): string {
+  if (fw === "1cat-vllm") {
+    const p = current.value;
+    return p?.onecatImage?.trim() || FW_META["1cat-vllm"].dockerImage;
+  }
+  return FW_META[fw]?.dockerImage ?? "";
+}
+
+const isCustomImage = computed(
+  () =>
+    form.mode === "docker" &&
+    form.dockerImage.trim() !== builtinImageOf(form.framework),
+);
+
+watch(
+  () => [form.mode, form.framework, form.dockerImage],
+  () => {
+    if (!isCustomImage.value) delete form.params.customCmd;
+  },
+);
 </script>
 
 <template>
   <div>
-    <!-- 框架检测 -->
-    <n-card size="small" title="框架检测" style="margin-bottom: 16px">
+    <!-- Docker 镜像 -->
+    <n-card size="small" title="Docker 镜像" style="margin-bottom: 16px">
+      <template #header-extra>
+        <n-space size="small">
+          <n-tag v-if="dockerStatus?.installed" type="success" size="small">
+            {{ dockerStatus.version ?? "已安装" }}
+          </n-tag>
+          <n-tag v-else type="error" size="small">未安装</n-tag>
+          <n-tag
+            v-if="dockerStatus?.installed && !dockerStatus.usable"
+            type="warning"
+            size="small"
+          >
+            当前用户无权限
+          </n-tag>
+          <n-tag
+            v-if="dockerStatus?.installed && dockerStatus.usable"
+            :type="dockerStatus.gpuRuntime ? 'success' : 'warning'"
+            size="small"
+          >
+            {{ gpuTagText }}
+          </n-tag>
+          <n-button
+            v-if="dockerStatus && !dockerStatus.installed"
+            size="small"
+            type="primary"
+            @click="askInstallDocker"
+          >
+            安装 Docker
+          </n-button>
+          <n-button
+            v-else-if="dockerStatus && !dockerStatus.usable"
+            size="small"
+            type="warning"
+            @click="askAuthorizeDocker"
+          >
+            授权
+          </n-button>
+          <n-button size="small" :loading="imagesLoading" @click="loadDocker()">
+            刷新
+          </n-button>
+          <n-button
+            v-if="dockerStatus?.installed && dockerStatus.usable"
+            size="small"
+            :loading="gpuTesting"
+            @click="doGpuTest"
+          >
+            测试 GPU
+          </n-button>
+        </n-space>
+      </template>
+      <n-data-table
+        :columns="imageColumns"
+        :data="imageRows"
+        :bordered="false"
+        size="small"
+      />
+      <n-space align="center" style="margin-top: 12px">
+        <n-input
+          v-model:value="customImage"
+          placeholder="自定义镜像，如 nvcr.io/nvidia/xxx:tag 或 registry:5000/xxx:1.0"
+          style="width: 520px"
+          :disabled="!canUseDocker"
+        />
+        <n-button
+          type="primary"
+          :loading="pulling && pullImage === customImage"
+          :disabled="!customImage.trim() || pulling || !canUseDocker"
+          @click="doPull(customImage)"
+        >
+          拉取
+        </n-button>
+      </n-space>
+      <div class="fw-desc" style="margin-top: 8px">
+        已存在的镜像不可重复拉取。使用自拉取的镜像创建实例时，需自行定义启动参数（模型按原路径挂载进容器）。
+      </div>
+    </n-card>
+
+    <!-- 引擎管理 -->
+    <n-card size="small" title="引擎管理" style="margin-bottom: 16px">
       <template #header-extra>
         <n-button size="small" :loading="detecting" @click="current && store.detect(current.id)">
           重新检测
@@ -490,9 +831,6 @@ const visibleParams = computed(() =>
               <n-button v-if="c.nativeTool" size="tiny" @click="askInstall(c.nativeTool, c.label)">
                 一键安装
               </n-button>
-              <n-button size="tiny" @click="askInstall(c.dockerTool, c.label)">
-                拉取镜像
-              </n-button>
             </n-space>
           </n-card>
         </n-grid-item>
@@ -500,7 +838,7 @@ const visibleParams = computed(() =>
     </n-card>
 
     <!-- 实例列表 -->
-    <n-card size="small" title="推理实例">
+    <n-card size="small" title="引擎实例">
       <template #header-extra>
         <n-button type="primary" size="small" @click="openAdd">新建实例</n-button>
       </template>
@@ -537,29 +875,47 @@ const visibleParams = computed(() =>
           <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 160px" />
         </n-form-item>
         <n-form-item v-if="form.mode === 'docker'" label="镜像">
-          <n-input v-model:value="form.dockerImage" />
+          <n-input
+            v-model:value="form.dockerImage"
+            :placeholder="builtinImageOf(form.framework)"
+          />
+          <div v-if="isCustomImage" class="fw-desc" style="margin-top: 4px">
+            自定义镜像：下方需自行填写启动参数
+          </div>
         </n-form-item>
 
-        <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
+        <n-form-item v-if="isCustomImage" label="启动参数">
           <n-input
-            v-if="p.type === 'text'"
-            v-model:value="form.params[p.key]"
-            :placeholder="p.placeholder"
-          />
-          <n-input-number
-            v-else-if="p.type === 'number'"
-            v-model:value="form.params[p.key]"
-            :placeholder="p.placeholder"
-            :step="p.step ?? 1"
-            :min="0"
-          />
-          <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
-          <n-select
-            v-else
-            v-model:value="form.params[p.key]"
-            :options="(p.options ?? []).map((o) => ({ label: o, value: o }))"
+            v-model:value="form.params.customCmd"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            :placeholder="`如 python3 -m sglang.launch_server --model-path ${form.modelPath || '<模型路径>'} --port ${form.port} --tp 1`"
+            class="preview"
           />
         </n-form-item>
+
+        <template v-else>
+          <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
+            <n-input
+              v-if="p.type === 'text'"
+              v-model:value="form.params[p.key]"
+              :placeholder="p.placeholder"
+            />
+            <n-input-number
+              v-else-if="p.type === 'number'"
+              v-model:value="form.params[p.key]"
+              :placeholder="p.placeholder"
+              :step="p.step ?? 1"
+              :min="0"
+            />
+            <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
+            <n-select
+              v-else
+              v-model:value="form.params[p.key]"
+              :options="(p.options ?? []).map((o) => ({ label: o, value: o }))"
+            />
+          </n-form-item>
+        </template>
 
         <n-form-item label="启动命令预览">
           <n-input
@@ -612,6 +968,44 @@ const visibleParams = computed(() =>
         </n-button>
       </n-space>
     </n-modal>
+
+    <!-- 镜像拉取日志 -->
+    <n-modal
+      :show="pullShow"
+      preset="card"
+      :title="`拉取镜像 ${pullImage}`"
+      style="width: 720px"
+      :mask-closable="false"
+      @close="closePull"
+    >
+      <pre class="dllog">{{ pullStream || "(等待输出...)" }}</pre>
+      <n-space justify="end" style="margin-top: 12px">
+        <n-tag v-if="pullDone != null" :type="pullDone === 0 ? 'success' : 'error'">
+          退出码 {{ pullDone }}
+        </n-tag>
+        <n-button v-if="pullDone != null" type="primary" @click="closePull">
+          {{ pullDone === 0 ? "完成" : "关闭" }}
+        </n-button>
+      </n-space>
+    </n-modal>
+
+    <!-- GPU 实测 -->
+    <n-modal v-model:show="gpuTestShow" preset="card" title="GPU 实测" style="width: 720px">
+      <pre class="dllog">{{ gpuTestOut || "(无输出)" }}</pre>
+      <n-space justify="end" style="margin-top: 12px">
+        <n-tag v-if="gpuTestOk != null" :type="gpuTestOk ? 'success' : 'error'">
+          {{ gpuTestOk ? "GPU 可用" : "GPU 不可用" }}
+        </n-tag>
+        <n-button type="primary" @click="gpuTestShow = false">关闭</n-button>
+      </n-space>
+    </n-modal>
+
+    <!-- Docker 安装/授权 -->
+    <docker-installer
+      ref="dockerInstallerRef"
+      @success="onDockerSuccess"
+      @done="onDockerFlowDone"
+    />
 
     <!-- 日志抽屉 -->
     <n-drawer

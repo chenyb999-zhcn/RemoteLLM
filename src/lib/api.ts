@@ -1,20 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import type {
+  AppSettings,
   ConnInfo,
   CmdOutput,
+  DockerStatus,
   EnvInfo,
   FwDetect,
   GpuPoll,
+  GpuQueryResult,
+  InitCheckResult,
   InstanceConfig,
   InstanceStatus,
+  LocalImage,
   LocalModel,
   MetricSample,
   ModelInfo,
+  ParserLibsStatus,
+  RepoFile,
   ProcRow,
   ServerProfile,
   StreamChunk,
   StreamDone,
+  ToolsStatus,
 } from "./types";
 
 export const api = {
@@ -58,6 +66,8 @@ export const api = {
 
   searchModels: (source: string, query: string, limit: number) =>
     invoke<ModelInfo[]>("search_models", { source, query, limit }),
+  listRepoFiles: (source: string, modelId: string, token: string | null) =>
+    invoke<RepoFile[]>("list_repo_files", { source, modelId, token }),
   listLocalModels: (profileId: string) =>
     invoke<LocalModel[]>("list_local_models", { profileId }),
   modelDownloadStart: (
@@ -66,6 +76,7 @@ export const api = {
     modelId: string,
     dest: string | null,
     token: string | null,
+    files: string[] | null,
   ) =>
     invoke<string>("model_download_start", {
       profileId,
@@ -73,14 +84,62 @@ export const api = {
       modelId,
       dest,
       token,
+      files,
     }),
   modelDelete: (profileId: string, name: string) =>
     invoke<string>("model_delete", { profileId, name }),
+  checkTools: (profileId: string) =>
+    invoke<ToolsStatus>("check_download_tools", { profileId }),
+  checkParserLibs: (profileId: string) =>
+    invoke<ParserLibsStatus>("check_parser_libs", { profileId }),
 
   installPreview: (profileId: string, tool: string) =>
     invoke<string>("install_preview", { profileId, tool }),
   installStart: (profileId: string, tool: string) =>
     invoke<string>("install_start", { profileId, tool }),
+
+  checkDocker: (profileId: string) => invoke<DockerStatus>("check_docker", { profileId }),
+  listDockerImages: (profileId: string) =>
+    invoke<LocalImage[]>("list_docker_images", { profileId }),
+  dockerInstallPreview: (sudoMode: string) =>
+    invoke<string>("docker_install_preview", { sudoMode }),
+  dockerInstallStart: (profileId: string, password: string | null) =>
+    invoke<string>("docker_install_start", { profileId, password }),
+  dockerAuthorizeStart: (profileId: string, password: string | null) =>
+    invoke<string>("docker_authorize_start", { profileId, password }),
+  dockerProxyPreview: (sudoMode: string, proxyUrl: string | null) =>
+    invoke<string>("docker_proxy_preview", { sudoMode, proxyUrl }),
+  dockerProxyStart: (profileId: string, password: string | null) =>
+    invoke<string>("docker_proxy_start", { profileId, password }),
+  dockerPullStart: (profileId: string, image: string) =>
+    invoke<string>("docker_pull_start", { profileId, image }),
+  dockerGpuTest: (profileId: string) =>
+    invoke<string>("docker_gpu_test", { profileId }),
+
+  serverInitCheck: (profileId: string) =>
+    invoke<InitCheckResult>("server_init_check", { profileId }),
+  sudoModeCheck: (profileId: string) =>
+    invoke<string>("sudo_mode_check", { profileId }),
+  aptInstallPreview: (sudoMode: string, pkgs: string[]) =>
+    invoke<string>("apt_install_preview", { sudoMode, pkgs }),
+  aptInstallStart: (profileId: string, pkgs: string[], password: string | null) =>
+    invoke<string>("apt_install_start", { profileId, pkgs, password }),
+
+  gpuQuery: (profileId: string) => invoke<GpuQueryResult>("gpu_query", { profileId }),
+  gpuKill: (profileId: string, pid: number) =>
+    invoke<string>("gpu_kill", { profileId, pid }),
+  gpuSetPreview: (sudoMode: string, action: string, gpu: number | null, value: number) =>
+    invoke<string>("gpu_set_preview", { sudoMode, action, gpu, value }),
+  gpuSetStart: (
+    profileId: string,
+    action: string,
+    gpu: number | null,
+    value: number,
+    password: string | null,
+  ) => invoke<string>("gpu_set_start", { profileId, action, gpu, value, password }),
+
+  getSettings: () => invoke<AppSettings>("get_settings"),
+  saveSettings: (s: AppSettings) => invoke<AppSettings>("save_settings", { settings: s }),
 };
 
 export function fmtBytes(bytes?: number | null, digits = 1): string {
@@ -95,20 +154,80 @@ export function fmtBytes(bytes?: number | null, digits = 1): string {
   return `${v.toFixed(digits)} ${units[i]}`;
 }
 
-/** 订阅某任务的流式输出；返回取消函数 */
+type TaskBuf = { chunks: StreamChunk[]; done: StreamDone | null };
+type TaskSub = { onChunk: (c: StreamChunk) => void; onDone: (d: StreamDone) => void };
+
+const taskBuffers = new Map<string, TaskBuf>();
+const taskSubs = new Map<string, Set<TaskSub>>();
+let busReady = false;
+let busPromise: Promise<void> | null = null;
+
+function taskPrune() {
+  if (taskBuffers.size <= 100) return;
+  const excess = taskBuffers.size - 100;
+  let i = 0;
+  for (const k of taskBuffers.keys()) {
+    if (i++ >= excess) break;
+    taskBuffers.delete(k);
+  }
+}
+
+/** 全局任务总线：App 启动时注册一次 task://stream / task://exit 监听并缓存各任务输出，
+ *  避免快任务在调用方注册监听前结束而丢事件 */
+export function startTaskBus(): Promise<void> {
+  if (busReady) return Promise.resolve();
+  if (busPromise) return busPromise;
+  busPromise = (async () => {
+    await listen<StreamChunk>("task://stream", (e) => {
+      let buf = taskBuffers.get(e.payload.taskId);
+      if (!buf) {
+        buf = { chunks: [], done: null };
+        taskBuffers.set(e.payload.taskId, buf);
+      }
+      buf.chunks.push(e.payload);
+      if (buf.chunks.length > 4000) buf.chunks.splice(0, buf.chunks.length - 4000);
+      taskSubs.get(e.payload.taskId)?.forEach((s) => s.onChunk(e.payload));
+      taskPrune();
+    });
+    await listen<StreamDone>("task://exit", (e) => {
+      let buf = taskBuffers.get(e.payload.taskId);
+      if (!buf) {
+        buf = { chunks: [], done: null };
+        taskBuffers.set(e.payload.taskId, buf);
+      }
+      buf.done = e.payload;
+      taskSubs.get(e.payload.taskId)?.forEach((s) => s.onDone(e.payload));
+    });
+    busReady = true;
+  })();
+  return busPromise;
+}
+
+/** 订阅某任务的流式输出；返回取消函数。
+ *  任务已产生的输出（含已结束）会先回放，保证快任务不丢事件 */
 export async function onTaskStream(
   taskId: string,
   onChunk: (c: StreamChunk) => void,
   onDone: (d: StreamDone) => void,
 ): Promise<() => Promise<void>> {
-  const un1: UnlistenFn = await listen<StreamChunk>("task://stream", (e) => {
-    if (e.payload.taskId === taskId) onChunk(e.payload);
-  });
-  const un2: UnlistenFn = await listen<StreamDone>("task://exit", (e) => {
-    if (e.payload.taskId === taskId) onDone(e.payload);
-  });
+  await startTaskBus();
+  const buf = taskBuffers.get(taskId);
+  if (buf) {
+    for (const c of buf.chunks) onChunk(c);
+    if (buf.done) {
+      onDone(buf.done);
+      return async () => {};
+    }
+  }
+  const sub: TaskSub = { onChunk, onDone };
+  let subs = taskSubs.get(taskId);
+  if (!subs) {
+    subs = new Set();
+    taskSubs.set(taskId, subs);
+  }
+  subs.add(sub);
   return async () => {
-    await un1();
-    await un2();
+    subs.delete(sub);
+    if (subs.size === 0) taskSubs.delete(taskId);
   };
 }

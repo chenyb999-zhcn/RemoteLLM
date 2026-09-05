@@ -169,6 +169,7 @@ pub fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 format!("--port {}", cfg.port),
                 format!("-ngl {}", pnum(p, "ngl", 99)),
                 format!("-c {}", pnum(p, "ctxSize", 4096)),
+                "--metrics".to_string(),
             ];
             let threads = pnum(p, "threads", 0);
             if threads > 0 {
@@ -198,10 +199,15 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
         "docker run -d".to_string(),
         "--gpus all".into(),
         format!("--name {}", s),
-        format!("-p {}:{},", cfg.port, cfg.port),
+        format!("-p {}:{}", cfg.port, cfg.port),
         format!("-v {}:{}", m, m),
         image,
     ];
+    // 自定义镜像：启动参数完全由用户定义（模型已按原路径挂载进容器）
+    if let Some(custom) = pstr_opt(p, "customCmd") {
+        run.push(custom);
+        return Ok(run.join(" "));
+    }
     match cfg.framework.as_str() {
         "vllm" | "1cat-vllm" => {
             run.push(format!("--model {}", m));
@@ -237,6 +243,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push(format!("-ngl {}", pnum(p, "ngl", 99)));
             run.push(format!("-c {}", pnum(p, "ctxSize", 4096)));
             run.push("--host 0.0.0.0".into());
+            run.push("--metrics".into());
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 run.push(v);
             }
@@ -250,8 +257,8 @@ fn default_docker_image(fw: &str) -> String {
     match fw {
         "vllm" => "vllm/vllm-openai:latest".into(),
         "1cat-vllm" => "vllm/vllm-openai:latest".into(),
-        "sglang" => "lmsysorg/sglang:latest".into(),
-        _ => "ggml-org/llama.cpp:server".into(),
+        "sglang" => "lmsysorg/sglang:latest-cu129".into(),
+        _ => "ghcr.io/ggml-org/llama.cpp:server-cuda".into(),
     }
 }
 
@@ -339,16 +346,63 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<Vec<InstanceC
 
 const DETECT_SCRIPT: &str = r#"
 echo "==VLLM=="
-(command -v vllm >/dev/null 2>&1 && vllm --version 2>/dev/null | head -1) || true
-python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/null || true
+_v=""
+command -v vllm >/dev/null 2>&1 && _v=$(vllm --version 2>/dev/null | head -1)
+_p=$(python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/null)
+[ -n "$_v" ] && echo "$_v"
+[ -n "$_p" ] && echo "$_p"
+[ -z "$_v" ] && [ -z "$_p" ] && echo NONE
 echo "==1CAT=="
-(command -v 1cat-vllm >/dev/null 2>&1 && 1cat-vllm --version 2>/dev/null | head -1) || true
+_v=""
+command -v 1cat-vllm >/dev/null 2>&1 && _v=$(1cat-vllm --version 2>/dev/null | head -1)
+[ -n "$_v" ] && echo "$_v"
+[ -z "$_v" ] && echo NONE
 echo "==SGLANG=="
-python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null || true
+_p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+[ -n "$_p" ] && echo "$_p"
+[ -z "$_p" ] && echo NONE
 echo "==LLAMA=="
-(command -v llama-server >/dev/null 2>&1 && llama-server --version 2>&1 | head -2) || true
-find "$HOME/RemoteLLM/frameworks" -maxdepth 4 -name llama-server -type f 2>/dev/null | head -3
+_v=""
+command -v llama-server >/dev/null 2>&1 && _v=$(llama-server --version 2>&1 | head -1)
+_f=$(find "$HOME/RemoteLLM/frameworks" -maxdepth 4 -name llama-server -type f 2>/dev/null | head -1)
+[ -n "$_v" ] && echo "$_v"
+[ -n "$_f" ] && echo "$_f"
+[ -z "$_v" ] && [ -z "$_f" ] && echo NONE
+exit 0
 "#;
+
+const DETECT_FRAMEWORKS: [(&str, &str); 4] = [
+    ("vllm", "VLLM"),
+    ("1cat-vllm", "1CAT"),
+    ("sglang", "SGLANG"),
+    ("llama-cpp", "LLAMA"),
+];
+
+/// 解析 DETECT_SCRIPT 输出（每段空时输出 NONE，避免把下一段标记当内容）
+pub fn parse_detect(raw: &str) -> Vec<FwDetect> {
+    let mut result = Vec::new();
+    for (fw, marker) in DETECT_FRAMEWORKS {
+        let section = raw
+            .split(&format!("=={marker}=="))
+            .nth(1)
+            .and_then(|rest| rest.split("\n==").next())
+            .unwrap_or("");
+        let lines: Vec<String> = section
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .filter(|l| !l.eq_ignore_ascii_case("NONE"))
+            .filter(|l| !l.starts_with("=="))
+            .collect();
+        result.push(FwDetect {
+            framework: fw.to_string(),
+            installed: !lines.is_empty(),
+            version: lines.first().cloned(),
+            note: lines.get(1).cloned(),
+        });
+    }
+    result
+}
 
 #[tauri::command]
 pub async fn detect_frameworks(
@@ -356,27 +410,7 @@ pub async fn detect_frameworks(
     profile_id: String,
 ) -> Result<Vec<FwDetect>, AppError> {
     let out = run_on(&state, &profile_id, DETECT_SCRIPT).await?;
-    let mut result = Vec::new();
-    for (fw, marker) in [("vllm", "VLLM"), ("1cat-vllm", "1CAT"), ("sglang", "SGLANG"), ("llama-cpp", "LLAMA")] {
-        let section = out
-            .split(&format!("=={marker}==\n"))
-            .nth(1)
-            .and_then(|rest| rest.split("\n==").next());
-        let lines: Vec<&str> = section
-            .unwrap_or("")
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect();
-        let installed = !lines.is_empty();
-        result.push(FwDetect {
-            framework: fw.to_string(),
-            installed,
-            version: lines.first().map(|s| s.to_string()),
-            note: lines.get(1).map(|s| s.to_string()),
-        });
-    }
-    Ok(result)
+    Ok(parse_detect(&out))
 }
 
 #[tauri::command]
@@ -526,4 +560,48 @@ pub async fn instance_logs(
     let log = format!("{}/{}.log", profile.logs_dir(), s);
     let cmd = format!("tail -n {} {} 2>/dev/null || echo '(无日志)'", lines, log);
     Ok(run_on(&state, &profile.id, &cmd).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_detect_all_none() {
+        let raw = "\n==VLLM==\nNONE\n==1CAT==\nNONE\n==SGLANG==\nNONE\n==LLAMA==\nNONE\n";
+        let r = parse_detect(raw);
+        assert_eq!(r.len(), 4);
+        for d in &r {
+            assert!(!d.installed, "{}", d.framework);
+            assert_eq!(d.version, None);
+            assert_eq!(d.note, None);
+        }
+    }
+
+    #[test]
+    fn parse_detect_legacy_marker_leak() {
+        // 旧脚本空段时会把下一段标记当内容（vLLM 误报 "已安装 ==1CAT=="）
+        let raw = "\n==VLLM==\n==1CAT==\n==SGLANG==\nNONE\n==LLAMA==\nNONE\n";
+        let r = parse_detect(raw);
+        for d in &r {
+            assert!(!d.installed, "{}", d.framework);
+        }
+    }
+
+    #[test]
+    fn parse_detect_installed() {
+        let raw = "\n==VLLM==\nvLLM version 0.9.2\npython-vllm 0.9.2\n==1CAT==\nNONE\n==SGLANG==\nsglang 0.4.5\n==LLAMA==\nllama-server version 1234\n/home/chenyb/RemoteLLM/frameworks/llama-server\n";
+        let r = parse_detect(raw);
+        let vllm = &r[0];
+        assert!(vllm.installed);
+        assert_eq!(vllm.version.as_deref(), Some("vLLM version 0.9.2"));
+        assert_eq!(vllm.note.as_deref(), Some("python-vllm 0.9.2"));
+        let sglang = &r[2];
+        assert!(sglang.installed);
+        assert_eq!(sglang.version.as_deref(), Some("sglang 0.4.5"));
+        assert_eq!(sglang.note, None);
+        let llama = &r[3];
+        assert!(llama.installed);
+        assert_eq!(llama.note.as_deref(), Some("/home/chenyb/RemoteLLM/frameworks/llama-server"));
+    }
 }

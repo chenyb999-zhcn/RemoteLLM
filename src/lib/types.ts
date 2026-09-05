@@ -10,8 +10,30 @@ export interface ServerProfile {
   user: string;
   auth: AuthMethod;
   baseDir: string;
+  modelsDir?: string | null;
   onecatRepo?: string | null;
   onecatImage?: string | null;
+}
+
+export interface AppSettings {
+  defaultModelSource: string;
+  modelDir: string;
+  hfEndpoint: string;
+  hfToken: string;
+  pollIntervalMs: number;
+  lastProfileId: string;
+  autoConnect: boolean;
+  darkTheme: boolean;
+  proxyEnabled: boolean;
+  proxyUrl: string;
+}
+
+/** 单个磁盘分区 */
+export interface DiskInfo {
+  mount: string;
+  fs: string;
+  total: number | null;
+  used: number | null;
 }
 
 export interface GpuInfo {
@@ -34,6 +56,8 @@ export interface EnvInfo {
   memUsed?: number | null;
   diskTotal?: number | null;
   diskUsed?: number | null;
+  /** 全部磁盘分区 */
+  disks: DiskInfo[];
   python?: string | null;
   cuda?: string | null;
   cudaPath?: string | null;
@@ -89,9 +113,10 @@ export interface GpuPoll {
 export interface ProcRow {
   gpu: number;
   pid: number;
-  itc: number;
-  gmc: number;
-  mem: number;
+  sm: number;
+  memBw: number;
+  mem: number | null;
+  command: string;
 }
 
 export interface MetricSample {
@@ -139,6 +164,138 @@ export interface ModelInfo {
 }
 
 export interface LocalModel {
+  /** 服务器上的绝对路径 */
+  path: string;
+  /** 相对模型目录的路径（删除/复制用） */
+  rel: string;
+  name: string;
+  /** "gguf" | "gguf-split" | "safetensors" | "hf" | "dir" */
+  kind: string;
+  sizeBytes: number | null;
+  arch: string | null;
+  quant: string | null;
+  params: string | null;
+  ctx: number | null;
+  note: string | null;
+}
+
+export interface RepoFile {
+  path: string;
+  size: number;
+}
+
+export interface ToolsStatus {
+  modelscope: boolean;
+  huggingface: boolean;
+}
+
+export interface ParserLibsStatus {
+  gguf: boolean;
+  safetensors: boolean;
+}
+
+export interface DockerStatus {
+  installed: boolean;
+  version: string | null;
+  daemonRunning: boolean;
+  /** 当前用户能否直接执行 docker（在 docker 组或 root） */
+  usable: boolean;
+  isRoot: boolean;
+  sudoPasswordless: boolean;
+  /** nvidia-container-toolkit 就绪（--gpus all 需要） */
+  gpuRuntime: boolean;
+  /** GPU 信号明细: "rt" | "ctk" | "bin" | null */
+  gpuRuntimeDetail: string | null;
+  /** docker daemon 当前拉取代理，null = 未配置 */
+  daemonProxy: string | null;
+}
+
+export interface LocalImage {
   name: string;
   size: string | null;
+}
+
+/** 初始化检查单项 */
+export interface InitItem {
+  id: string;
+  group: "sys" | "gpu" | "docker" | "tools" | "engine" | string;
+  label: string;
+  state: "ok" | "warn" | "missing" | "info";
+  detail: string | null;
+  fix: string | null;
+  fixPkgs: string[] | null;
+  manual: string | null;
+}
+
+export interface InitCheckResult {
+  items: InitItem[];
+  okCount: number;
+  warnCount: number;
+  missingCount: number;
+}
+
+// ---------- GPU 管理 ----------
+
+export interface GpuCard {
+  index: number;
+  name: string;
+  serial: string | null;
+  driver: string;
+  vbios: string | null;
+  pcieGenCurrent: number | null;
+  pcieGenMax: number | null;
+  pcieWidth: number | null;
+}
+
+export interface GpuStat {
+  index: number;
+  util: number | null;
+  memTotalMb: number | null;
+  memUsedMb: number | null;
+  tempC: number | null;
+  powerW: number | null;
+  powerLimitW: number | null;
+  powerMinW: number | null;
+  powerMaxW: number | null;
+  powerDefaultW: number | null;
+  smClockMhz: number | null;
+  smClockMaxMhz: number | null;
+}
+
+export interface GpuSetState {
+  index: number;
+  persistence: boolean;
+  computeMode: string | null;
+  ecc: boolean | null;
+}
+
+export interface GpuThrottle {
+  index: number;
+  reasons: string[];
+}
+
+export interface GpuEcc {
+  index: number;
+  corrected: number | null;
+  uncorrected: number | null;
+}
+
+export interface GpuProcRow {
+  gpu: number;
+  pid: number;
+  user: string;
+  name: string;
+  elapsed: string;
+  memMb: number | null;
+  mine: boolean;
+}
+
+export interface GpuQueryResult {
+  cards: GpuCard[];
+  stats: GpuStat[];
+  settings: GpuSetState[];
+  throttles: GpuThrottle[];
+  ecc: GpuEcc[];
+  procs: GpuProcRow[];
+  topo: string | null;
 }
