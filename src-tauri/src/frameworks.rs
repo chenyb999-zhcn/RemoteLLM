@@ -134,6 +134,98 @@ fn push_llama_common(p: &serde_json::Value, c: &mut Vec<String>) {
     }
 }
 
+/// vLLM 通用参数（原生与 Docker 共用）
+fn push_vllm_common(p: &serde_json::Value, c: &mut Vec<String>) {
+    if let Some(v) = pnum_opt(p, "maxModelLen") {
+        c.push(format!("--max-model-len {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "gpuMemUtil") {
+        c.push(format!("--gpu-memory-utilization {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "dtype") {
+        c.push(format!("--dtype {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "servedModelName") {
+        c.push(format!("--served-model-name {}", v));
+    }
+    if pbool(p, "enforceEager") {
+        c.push("--enforce-eager".into());
+    }
+    if let Some(v) = pnumf_opt(p, "maxNumSeqs") {
+        c.push(format!("--max-num-seqs {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "maxNumBatchedTokens") {
+        c.push(format!("--max-num-batched-tokens {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "quantization") {
+        c.push(format!("--quantization {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "seed") {
+        c.push(format!("--seed {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "temperature") {
+        c.push(format!("--temperature {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "topP") {
+        c.push(format!("--top-p {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "topK") {
+        c.push(format!("--top-k {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "repetitionPenalty") {
+        c.push(format!("--repetition-penalty {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "maxTokens") {
+        c.push(format!("--max-tokens {}", v));
+    }
+    if pbool(p, "trustRemoteCode") {
+        c.push("--trust-remote-code".into());
+    }
+}
+
+/// SGLang 通用参数（原生与 Docker 共用）
+fn push_sglang_common(p: &serde_json::Value, c: &mut Vec<String>) {
+    if let Some(v) = pnumf_opt(p, "memFractionStatic") {
+        c.push(format!("--mem-fraction-static {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "contextLength") {
+        c.push(format!("--context-length {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "host") {
+        c.push(format!("--host {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "maxNumSeqs") {
+        c.push(format!("--max-num-reqs {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "chunkedPrefillSize") {
+        c.push(format!("--chunked-prefill-size {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "dtype") {
+        c.push(format!("--dtype {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "quantization") {
+        c.push(format!("--quantization {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "temperature") {
+        c.push(format!("--temperature {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "topP") {
+        c.push(format!("--top-p {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "topK") {
+        c.push(format!("--top-k {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "repetitionPenalty") {
+        c.push(format!("--repetition-penalty {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "maxTokens") {
+        c.push(format!("--max-tokens {}", v));
+    }
+    if pbool(p, "trustRemoteCode") {
+        c.push("--trust-remote-code".into());
+    }
+}
+
 fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
     let p = &cfg.params;
     let model = cfg.model_path.trim();
@@ -155,21 +247,7 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 format!("--port {}", cfg.port),
                 format!("--tensor-parallel-size {}", pnum(p, "tp", 1)),
             ];
-            if let Some(v) = pnum_opt(p, "maxModelLen") {
-                c.push(format!("--max-model-len {}", v));
-            }
-            if let Some(v) = pnumf_opt(p, "gpuMemUtil") {
-                c.push(format!("--gpu-memory-utilization {}", v));
-            }
-            if let Some(v) = pstr_opt(p, "dtype") {
-                c.push(format!("--dtype {}", v));
-            }
-            if let Some(v) = pstr_opt(p, "servedModelName") {
-                c.push(format!("--served-model-name {}", v));
-            }
-            if pbool(p, "enforceEager") {
-                c.push("--enforce-eager".into());
-            }
+            push_vllm_common(p, &mut c);
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 c.push(norm_args(&v));
             }
@@ -182,15 +260,7 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 format!("--port {}", cfg.port),
                 format!("--tp {}", pnum(p, "tp", 1)),
             ];
-            if let Some(v) = pnumf_opt(p, "memFractionStatic") {
-                c.push(format!("--mem-fraction-static {}", v));
-            }
-            if let Some(v) = pnum_opt(p, "contextLength") {
-                c.push(format!("--context-length {}", v));
-            }
-            if let Some(v) = pstr_opt(p, "host") {
-                c.push(format!("--host {}", v));
-            }
+            push_sglang_common(p, &mut c);
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 c.push(norm_args(&v));
             }
@@ -257,15 +327,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push(format!("--model {}", m));
             run.push(format!("--port {}", cfg.port));
             run.push(format!("--tensor-parallel-size {}", pnum(p, "tp", 1)));
-            if let Some(v) = pnum_opt(p, "maxModelLen") {
-                run.push(format!("--max-model-len {}", v));
-            }
-            if let Some(v) = pnumf_opt(p, "gpuMemUtil") {
-                run.push(format!("--gpu-memory-utilization {}", v));
-            }
-            if pbool(p, "enforceEager") {
-                run.push("--enforce-eager".into());
-            }
+            push_vllm_common(p, &mut run);
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 run.push(norm_args(&v));
             }
@@ -274,9 +336,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push(format!("--model-path {}", m));
             run.push(format!("--port {}", cfg.port));
             run.push(format!("--tp {}", pnum(p, "tp", 1)));
-            if let Some(v) = pnumf_opt(p, "memFractionStatic") {
-                run.push(format!("--mem-fraction-static {}", v));
-            }
+            push_sglang_common(p, &mut run);
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 run.push(norm_args(&v));
             }
@@ -731,6 +791,125 @@ mod tests {
         assert!(cmd.contains("--spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 1"), "cmd: {cmd}");
         // 多余空白压缩为单空格
         assert!(cmd.contains("--foo bar"), "cmd: {cmd}");
+    }
+
+    fn test_cfg_fw(framework: &str, params: serde_json::Value) -> InstanceConfig {
+        let mut c = test_cfg(params);
+        c.framework = framework.into();
+        c
+    }
+
+    #[test]
+    fn build_command_vllm_sampling_flags() {
+        let cfg = test_cfg_fw(
+            "vllm",
+            serde_json::json!({
+                "tp": 2,
+                "maxModelLen": 8192,
+                "gpuMemUtil": 0.85,
+                "dtype": "float16",
+                "maxNumSeqs": 64,
+                "quantization": "fp8",
+                "trustRemoteCode": true,
+                "temperature": 0.3,
+                "topP": 0.9,
+                "topK": 20,
+                "repetitionPenalty": 1.1,
+                "maxTokens": 1024,
+                "extraArgs": "--limit-concurrency 32"
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.starts_with("vllm serve '/mnt/m.gguf' --port 8080 --tensor-parallel-size 2"), "cmd: {cmd}");
+        for flag in [
+            "--max-model-len 8192",
+            "--gpu-memory-utilization 0.85",
+            "--dtype float16",
+            "--max-num-seqs 64",
+            "--quantization fp8",
+            "--trust-remote-code",
+            "--temperature 0.3",
+            "--top-p 0.9",
+            "--top-k 20",
+            "--repetition-penalty 1.1",
+            "--max-tokens 1024",
+            "--limit-concurrency 32",
+        ] {
+            assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+    }
+
+    #[test]
+    fn build_command_vllm_docker_sampling_flags() {
+        let mut cfg = test_cfg_fw(
+            "vllm",
+            serde_json::json!({ "tp": 1, "maxNumSeqs": 32, "temperature": 0.5 }),
+        );
+        cfg.mode = "docker".into();
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        assert!(cmd.contains("--tensor-parallel-size 1"), "cmd: {cmd}");
+        assert!(cmd.contains("--max-num-seqs 32"), "cmd: {cmd}");
+        assert!(cmd.contains("--temperature 0.5"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_sglang_sampling_flags() {
+        let cfg = test_cfg_fw(
+            "sglang",
+            serde_json::json!({
+                "tp": 1,
+                "memFractionStatic": 0.8,
+                "contextLength": 16384,
+                "host": "0.0.0.0",
+                "maxNumSeqs": 128,
+                "chunkedPrefillSize": 8192,
+                "dtype": "float16",
+                "quantization": "awq",
+                "trustRemoteCode": true,
+                "temperature": 0.7,
+                "topP": 0.95,
+                "topK": 40,
+                "repetitionPenalty": 1.05,
+                "maxTokens": 2048
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        assert!(
+            cmd.starts_with("python3 -m sglang.launch_server --model-path '/mnt/m.gguf' --port 8080 --tp 1"),
+            "cmd: {cmd}"
+        );
+        for flag in [
+            "--mem-fraction-static 0.8",
+            "--context-length 16384",
+            "--host 0.0.0.0",
+            "--max-num-reqs 128",
+            "--chunked-prefill-size 8192",
+            "--dtype float16",
+            "--quantization awq",
+            "--trust-remote-code",
+            "--temperature 0.7",
+            "--top-p 0.95",
+            "--top-k 40",
+            "--repetition-penalty 1.05",
+            "--max-tokens 2048",
+        ] {
+            assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+    }
+
+    #[test]
+    fn build_command_sglang_docker_sampling_flags() {
+        let mut cfg = test_cfg_fw(
+            "sglang",
+            serde_json::json!({ "tp": 2, "maxNumSeqs": 64, "topP": 0.9 }),
+        );
+        cfg.mode = "docker".into();
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        assert!(cmd.contains("--tp 2"), "cmd: {cmd}");
+        assert!(cmd.contains("--max-num-reqs 64"), "cmd: {cmd}");
+        assert!(cmd.contains("--top-p 0.9"), "cmd: {cmd}");
     }
 
     fn test_profile() -> crate::profile::ServerProfile {

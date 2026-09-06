@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
@@ -63,9 +63,9 @@ pub struct StreamDone {
 impl SshSession {
     pub async fn connect(profile: &ServerProfile) -> Result<Self, AppError> {
         let config = Arc::new(client::Config {
-            // 编译类长命令可能有数分钟无输出（如 CUDA 大文件静默编译），
-            // 超时过短会误杀连接导致任务中断（exit 255）
-            inactivity_timeout: Some(Duration::from_secs(300)),
+            // 不设空闲超时：编译/安装类长命令（pip 拉大 wheel、CUDA 静默编译）
+            // 可能长时间无输出，任何有限超时都会误杀连接导致 exit 255
+            inactivity_timeout: None,
             ..Default::default()
         });
         let mut handle = client::connect(config, (profile.host.as_str(), profile.port), ClientHandler {})
