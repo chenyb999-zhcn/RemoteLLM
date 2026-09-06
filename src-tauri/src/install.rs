@@ -14,6 +14,9 @@ fn get_profile(app: &AppHandle, profile_id: &str) -> Result<ServerProfile, AppEr
         .ok_or_else(|| AppError::Other(format!("服务器档案不存在: {profile_id}")))
 }
 
+/// pip 默认使用清华镜像源（国内加速，避免 pypi.org 超时）
+const PIP_INDEX: &str = "--index-url https://pypi.tuna.tsinghua.edu.cn/simple";
+
 /// pip 自愈：缺 pip 时用官网 get-pip.py 安装（python urllib 下载，不依赖 curl；
 /// 系统目录不可写时自动回退 --user）。代理由脚本前缀的 http_proxy/https_proxy 环境变量生效。
 fn pip_bootstrap() -> &'static str {
@@ -30,9 +33,21 @@ fi
 /// 自动重试 --break-system-packages；prefix 为代理导出前缀，空 = 未启用代理
 fn pip_install(pkg: &str, prefix: &str) -> String {
     format!(
-        "{prefix}{boot}python3 -m pip install -U '{pkg}' 2>&1 \
-          || python3 -m pip install -U '{pkg}' --break-system-packages 2>&1",
+        "{prefix}{boot}python3 -m pip install -U {idx} '{pkg}' 2>&1 \
+          || python3 -m pip install -U {idx} '{pkg}' --break-system-packages 2>&1",
+        idx = PIP_INDEX,
         boot = pip_bootstrap()
+    )
+}
+
+/// pip 卸载：只移除指定包本身，不触碰 torch/CUDA 等共享依赖（pip uninstall 默认行为），
+/// 因此不会影响其它引擎。遇 PEP 668 自动重试 --break-system-packages
+fn pip_uninstall(pkg: &str, prefix: &str) -> String {
+    format!(
+        "{prefix}echo \"[uninstall] 移除 {pkg}（保留 torch 等共享依赖，不影响其它引擎）\"\n\
+         python3 -m pip uninstall -y '{pkg}' 2>&1 \
+           || python3 -m pip uninstall -y '{pkg}' --break-system-packages 2>&1",
+        prefix = prefix
     )
 }
 
@@ -87,7 +102,8 @@ pub fn build_install_script(
         "1cat-vllm" => format!(
             "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
-              {boot}python3 -m pip install -e . 2>&1 || python3 -m pip install -e . --break-system-packages 2>&1",
+              {boot}python3 -m pip install -e {idx} . 2>&1 || python3 -m pip install -e {idx} . --break-system-packages 2>&1",
+            idx = PIP_INDEX,
             boot = pip_bootstrap()
         ),
         "llama-cpp" => format!(
@@ -113,8 +129,9 @@ pub fn build_install_script(
               cmake -B build -DCMAKE_BUILD_TYPE=Release $CUDA_FLAG && cmake --build build -j\"$(j=$(awk '/^MemTotal/ {{j=int($2/1024/2500); if(j<1)j=1; print j}}' /proc/meminfo); n=$(nproc 2>/dev/null || echo 4); [ \"$j\" -gt \"$n\" ] && j=$n; echo $j)\" --target llama-server 2>&1"
         ),
         "parser-libs" => format!(
-            "{proxy}{boot}python3 -m pip install -U gguf safetensors 2>&1 \
-              || python3 -m pip install -U gguf safetensors --break-system-packages 2>&1",
+            "{proxy}{boot}python3 -m pip install -U {idx} gguf safetensors 2>&1 \
+              || python3 -m pip install -U {idx} gguf safetensors --break-system-packages 2>&1",
+            idx = PIP_INDEX,
             boot = pip_bootstrap()
         ),
         "docker-vllm" => {
@@ -128,6 +145,19 @@ pub fn build_install_script(
         }
         "docker-sglang" => "docker pull 'lmsysorg/sglang:latest-cu129' 2>&1".into(),
         "docker-llama" => "docker pull 'ghcr.io/ggml-org/llama.cpp:server-cuda' 2>&1".into(),
+        // ---------- 卸载：只移除引擎包本身，保留 torch/CUDA 等共享依赖，不影响其它引擎 ----------
+        "uninstall-vllm" => pip_uninstall("vllm", &proxy),
+        "uninstall-sglang" => pip_uninstall("sglang", &proxy),
+        "uninstall-1cat-vllm" => format!(
+            "{proxy}{boot}python3 -m pip uninstall -y '1cat-vllm' 2>&1 \
+              || python3 -m pip uninstall -y '1cat-vllm' --break-system-packages 2>&1\n\
+              rm -rf {fw_dir}/1Cat-vLLM",
+            boot = pip_bootstrap()
+        ),
+        "uninstall-llama-cpp" => format!(
+            "echo \"[uninstall] 删除 llama.cpp 源码与构建目录（不影响其它引擎）\"\n\
+             rm -rf {fw_dir}/llama.cpp"
+        ),
         other => return Err(AppError::Other(format!("未知安装项: {other}"))),
     })
 }
@@ -215,6 +245,31 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_scripts_keep_shared_deps() {
+        let d = crate::settings::AppSettings::default();
+        // pip 引擎：只卸载自身包，绝不卸载 torch 等共享依赖
+        for (tool, pkg) in [
+            ("uninstall-vllm", "vllm"),
+            ("uninstall-sglang", "sglang"),
+            ("uninstall-1cat-vllm", "1cat-vllm"),
+        ] {
+            let s = build_install_script(&profile(), &d, tool, None).unwrap();
+            assert!(s.contains(&format!("pip uninstall -y '{pkg}'")), "tool={tool}");
+            assert!(!s.contains("uninstall -y 'torch'"), "tool={tool} 误删 torch");
+            assert!(!s.contains("uninstall -y 'transformers'"), "tool={tool} 误删 transformers");
+        }
+        // 1cat-vllm 额外清理 editable 源码目录
+        let s1 = build_install_script(&profile(), &d, "uninstall-1cat-vllm", None).unwrap();
+        assert!(s1.contains("rm -rf"), "1cat 未清理源码目录");
+        assert!(s1.contains("1Cat-vLLM"), "1cat 目录名错误");
+        // llama-cpp：删整个源码+构建目录
+        let s2 = build_install_script(&profile(), &d, "uninstall-llama-cpp", None).unwrap();
+        assert!(s2.contains("rm -rf"), "llama 未删目录");
+        assert!(s2.contains("llama.cpp"), "llama 目录名错误");
+        assert!(!s2.contains("pip uninstall"), "llama 卸载不应走 pip");
+    }
+
+    #[test]
     fn pip_tools_have_bootstrap() {
         let d = crate::settings::AppSettings::default();
         for tool in ["vllm", "sglang", "modelscope", "huggingface", "1cat-vllm", "parser-libs"] {
@@ -222,6 +277,8 @@ mod tests {
             assert!(s.contains("python3 -m pip --version"), "tool={tool}");
             assert!(s.contains("bootstrap.pypa.io/get-pip.py"), "tool={tool}");
             assert!(!s.contains("apt-get"), "tool={tool}");
+            // pip 安装默认走清华镜像源
+            assert!(s.contains("pypi.tuna.tsinghua.edu.cn/simple"), "tool={tool} 未用清华源");
         }
         // llama-cpp 纯 cmake 编译，不需要 pip 引导
         let s = build_install_script(&profile(), &d, "llama-cpp", None).unwrap();

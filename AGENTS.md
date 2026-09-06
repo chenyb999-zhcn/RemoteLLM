@@ -3,6 +3,7 @@
 ## 环境（本机 Windows + PowerShell 5.1）
 
 - 每个 bash 命令先补 PATH：`$env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH`
+- **`npm run tauri build` 也依赖 cargo 在 PATH**（内部调 `cargo metadata`）：不补 PATH 会报 `failed to run 'cargo metadata' ... program not found`。构建前务必先补 PATH。
 - npm 命令用 `npm.cmd`（非 `npm`）
 - cargo/npm 必须在正确目录：`cargo` 在 `src-tauri\`，`npm run tauri build` 在仓库根
 - 重建/重跑前杀进程：`Get-Process -Name remotellm,RemoteLLM -ErrorAction SilentlyContinue | Stop-Process -Force`

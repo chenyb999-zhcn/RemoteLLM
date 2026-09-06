@@ -454,21 +454,45 @@ const NATIVE_TOOL: Record<string, string> = {
 const installShow = ref(false);
 const installScript = ref("");
 const installTool = ref("");
+const installAction = ref<"install" | "upgrade" | "uninstall">("install");
+const installLabel = ref("");
 const installStreamShow = ref(false);
 const installStream = ref("");
 const installDone = ref<number | null>(null);
 const cancelInstall = ref<null | (() => Promise<void>)>(null);
 
-async function askInstall(tool: string, label: string) {
+const ACTION_TEXT: Record<string, string> = {
+  install: "安装",
+  upgrade: "升级",
+  uninstall: "卸载",
+};
+
+async function askInstall(tool: string, label: string, action: "install" | "upgrade") {
   const pid = current.value?.id;
   if (!pid) return;
   try {
     installScript.value = await api.installPreview(pid, tool);
     installTool.value = tool;
+    installAction.value = action;
+    installLabel.value = label;
     installShow.value = true;
-    void label;
   } catch (e: any) {
-    message.error(`获取安装命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(`获取${ACTION_TEXT[action]}命令失败: ${e?.message ?? JSON.stringify(e)}`);
+  }
+}
+
+async function askUninstall(fw: string, label: string) {
+  const pid = current.value?.id;
+  if (!pid) return;
+  const tool = `uninstall-${fw}`;
+  try {
+    installScript.value = await api.installPreview(pid, tool);
+    installTool.value = tool;
+    installAction.value = "uninstall";
+    installLabel.value = label;
+    installShow.value = true;
+  } catch (e: any) {
+    message.error(`获取卸载命令失败: ${e?.message ?? JSON.stringify(e)}`);
   }
 }
 
@@ -491,7 +515,7 @@ async function onInstallConfirm() {
       },
     );
   } catch (e: any) {
-    message.error(`启动安装失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(`启动${ACTION_TEXT[installAction.value]}失败: ${e?.message ?? JSON.stringify(e)}`);
   }
 }
 
@@ -873,9 +897,21 @@ watch(
             <div class="fw-desc">{{ c.desc }}</div>
             <div v-if="c.version" class="fw-version">{{ c.version }}</div>
             <n-space size="small" style="margin-top: 8px">
-              <n-button v-if="c.nativeTool && !c.installed" size="tiny" @click="askInstall(c.nativeTool, c.label)">
+              <n-button
+                v-if="c.nativeTool && !c.installed"
+                size="tiny"
+                @click="askInstall(c.nativeTool, c.label, 'install')"
+              >
                 一键安装
               </n-button>
+              <template v-else-if="c.nativeTool && c.installed">
+                <n-button size="tiny" @click="askInstall(c.nativeTool, c.label, 'upgrade')">
+                  升级
+                </n-button>
+                <n-button size="tiny" type="error" ghost @click="askUninstall(c.fw, c.label)">
+                  卸载
+                </n-button>
+              </template>
             </n-space>
           </n-card>
         </n-grid-item>
@@ -980,25 +1016,38 @@ watch(
       </template>
     </n-modal>
 
-    <!-- 安装确认 -->
-    <n-modal v-model:show="installShow" preset="card" title="一键安装" style="width: 620px">
+    <!-- 安装/升级/卸载确认 -->
+    <n-modal
+      v-model:show="installShow"
+      preset="card"
+      :title="`${ACTION_TEXT[installAction]} ${installLabel}`"
+      style="width: 620px"
+    >
       <p style="margin-top: 0; color: #999; font-size: 13px">
         将在服务器执行以下命令：
+      </p>
+      <p v-if="installAction === 'uninstall'" style="color: #d03050; font-size: 13px; margin: 4px 0">
+        仅移除该引擎本身，保留 torch 等共享依赖，不影响其它引擎运行。
       </p>
       <StreamLog :text="installScript" max-height="140px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
           <n-button @click="installShow = false">取消</n-button>
-          <n-button type="primary" @click="onInstallConfirm">开始安装</n-button>
+          <n-button
+            :type="installAction === 'uninstall' ? 'error' : 'primary'"
+            @click="onInstallConfirm"
+          >
+            开始{{ ACTION_TEXT[installAction] }}
+          </n-button>
         </n-space>
       </template>
     </n-modal>
 
-    <!-- 安装日志 -->
+    <!-- 安装/升级/卸载日志 -->
     <n-modal
       :show="installStreamShow"
       preset="card"
-      title="安装日志"
+      :title="`${ACTION_TEXT[installAction]}日志`"
       style="width: 720px"
       :mask-closable="false"
       @close="closeInstall"
@@ -1070,7 +1119,7 @@ watch(
             </n-space>
           </n-space>
         </template>
-        <pre class="logbox">{{ logs || "(空)" }}</pre>
+        <StreamLog :text="logs" :placeholder="'(空)'" :max-height="'calc(100vh - 220px)'" />
       </n-drawer-content>
     </n-drawer>
   </div>
@@ -1101,17 +1150,5 @@ watch(
   font-size: 12px;
   white-space: pre;
   overflow-x: auto;
-}
-.logbox {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 12px;
-  border-radius: 6px;
-  max-height: calc(100vh - 220px);
-  overflow: auto;
 }
 </style>
