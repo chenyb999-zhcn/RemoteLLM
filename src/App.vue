@@ -25,6 +25,7 @@ import { useDashboardStore } from "./stores/dashboard";
 import { useSettingsStore } from "./stores/settings";
 import { api, onTaskStream, startTaskBus } from "./lib/api";
 import DockerInstaller from "./components/DockerInstaller.vue";
+import StreamLog from "./components/StreamLog.vue";
 import type { DockerStatus } from "./lib/types";
 
 const store = useServerStore();
@@ -358,7 +359,7 @@ async function onDisconnect() {
           :mask-closable="false"
           @close="closeToolInstall"
         >
-          <pre class="tool-log">{{ toolInstallLog || "(等待输出...)" }}</pre>
+          <StreamLog :text="toolInstallLog" />
           <n-space justify="end" style="margin-top: 12px">
             <n-tag
               v-if="toolInstallDone != null"
@@ -395,17 +396,5 @@ async function onDisconnect() {
   align-items: center;
   height: 56px;
   padding: 0 16px;
-}
-.tool-log {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 12px;
-  border-radius: 6px;
-  height: 380px;
-  overflow: auto;
 }
 </style>

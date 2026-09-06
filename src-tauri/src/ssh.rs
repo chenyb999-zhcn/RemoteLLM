@@ -63,7 +63,9 @@ pub struct StreamDone {
 impl SshSession {
     pub async fn connect(profile: &ServerProfile) -> Result<Self, AppError> {
         let config = Arc::new(client::Config {
-            inactivity_timeout: Some(Duration::from_secs(120)),
+            // 编译类长命令可能有数分钟无输出（如 CUDA 大文件静默编译），
+            // 超时过短会误杀连接导致任务中断（exit 255）
+            inactivity_timeout: Some(Duration::from_secs(300)),
             ..Default::default()
         });
         let mut handle = client::connect(config, (profile.host.as_str(), profile.port), ClientHandler {})

@@ -26,6 +26,7 @@ import { useSettingsStore } from "../stores/settings";
 import { api, fmtBytes, onTaskStream } from "../lib/api";
 import type { LocalModel, ModelInfo, ParserLibsStatus, RepoFile } from "../lib/types";
 import { useClipboard } from "@vueuse/core";
+import StreamLog from "../components/StreamLog.vue";
 
 const store = useServerStore();
 const { current } = storeToRefs(store);
@@ -558,7 +559,7 @@ onBeforeUnmount(() => {
     <!-- 安装确认 -->
     <n-modal v-model:show="installShow" preset="card" title="安装下载工具" style="width: 620px">
       <p style="margin-top: 0; color: #999; font-size: 13px">将在服务器执行：</p>
-      <pre class="dllog" style="height: 120px">{{ installScript }}</pre>
+      <StreamLog :text="installScript" max-height="120px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
           <n-button @click="installShow = false">取消</n-button>
@@ -576,7 +577,7 @@ onBeforeUnmount(() => {
       :mask-closable="false"
       @close="closeInstall"
     >
-      <pre class="dllog">{{ installStream || "(等待输出...)" }}</pre>
+      <StreamLog :text="installStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="installDone != null" :type="installDone === 0 ? 'success' : 'error'">
           退出码 {{ installDone }}
@@ -596,7 +597,7 @@ onBeforeUnmount(() => {
       :mask-closable="false"
       @close="closeStream"
     >
-      <pre class="dllog">{{ dlStream || "(等待输出...)" }}</pre>
+      <StreamLog :text="dlStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="dlDone != null" :type="dlDone === 0 ? 'success' : 'error'">
           退出码 {{ dlDone }}
@@ -609,17 +610,4 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
-.dllog {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 12px;
-  border-radius: 6px;
-  height: 380px;
-  overflow: auto;
-}
-</style>
+

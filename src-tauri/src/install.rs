@@ -104,7 +104,13 @@ pub fn build_install_script(
               command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1 || {{ echo \"ERROR: 工具链仍不完整（g++/make/cmake），请在「初始化检查」页安装 build-essential + cmake\"; exit 1; }}\n\
               fi\n\
               if [ ! -d llama.cpp ]; then git clone --depth 1 https://github.com/ggml-org/llama.cpp; fi\n\
-              cd llama.cpp && cmake -B build && cmake --build build -j\"$(awk '/^MemTotal/ {{j=int($2/1024/1500); if(j<1)j=1; print j}}' /proc/meminfo)\" --target llama-server 2>&1"
+              cd llama.cpp\n\
+              if command -v nvcc >/dev/null 2>&1; then echo \"[build] 检测到 CUDA 工具链（nvcc），构建 GPU 版\"; CUDA_FLAG=\"-DGGML_CUDA=on\"; else echo \"[build] 未检测到 CUDA 工具链（nvcc），构建 CPU 版（不可用 GPU 卸载）\"; CUDA_FLAG=\"\"; fi\n\
+              if [ -f build/CMakeCache.txt ]; then\n\
+              if [ -n \"$CUDA_FLAG\" ] && ! grep -q \"GGML_CUDA:BOOL=ON\" build/CMakeCache.txt 2>/dev/null; then echo \"[build] 清理旧构建目录（缓存非 GPU 版）\"; rm -rf build; fi\n\
+              if [ -z \"$CUDA_FLAG\" ] && grep -q \"GGML_CUDA:BOOL=ON\" build/CMakeCache.txt 2>/dev/null; then echo \"[build] 清理旧构建目录（缓存为 GPU 版）\"; rm -rf build; fi\n\
+              fi\n\
+              cmake -B build -DCMAKE_BUILD_TYPE=Release $CUDA_FLAG && cmake --build build -j\"$(j=$(awk '/^MemTotal/ {{j=int($2/1024/2500); if(j<1)j=1; print j}}' /proc/meminfo); n=$(nproc 2>/dev/null || echo 4); [ \"$j\" -gt \"$n\" ] && j=$n; echo $j)\" --target llama-server 2>&1"
         ),
         "parser-libs" => format!(
             "{proxy}{boot}python3 -m pip install -U gguf safetensors 2>&1 \
@@ -196,7 +202,16 @@ mod tests {
         assert!(!s.contains("apt-get install -y g++"));
         // 配置输出不再吞掉；编译并发按内存自适应（每 job 约 1.5G）
         assert!(!s.contains("cmake -B build >/dev/null"));
-        assert!(s.contains("cmake -B build && cmake --build build -j\"$(awk '/^MemTotal/ {j=int($2/1024/1500); if(j<1)j=1; print j}' /proc/meminfo)\" --target llama-server"));
+        // 编译并发：内存自适应（每 job 约 2.5G，CUDA 编译更吃内存）且不超过核数
+        assert!(s.contains(
+            "cmake -B build -DCMAKE_BUILD_TYPE=Release $CUDA_FLAG && cmake --build build -j\"$(j=$(awk '/^MemTotal/ {j=int($2/1024/2500); if(j<1)j=1; print j}' /proc/meminfo); n=$(nproc 2>/dev/null || echo 4); [ \"$j\" -gt \"$n\" ] && j=$n; echo $j)\" --target llama-server"
+        ));
+        // CUDA：有 nvcc 时传 -DGGML_CUDA=on，否则 CPU 版提示；缓存与本次要求不一致时清 build
+        assert!(s.contains("command -v nvcc >/dev/null 2>&1"));
+        assert!(s.contains("CUDA_FLAG=\"-DGGML_CUDA=on\""));
+        assert!(s.contains("未检测到 CUDA 工具链（nvcc），构建 CPU 版"));
+        assert!(s.contains("GGML_CUDA:BOOL=ON\" build/CMakeCache.txt"));
+        assert!(s.contains("rm -rf build"));
     }
 
     #[test]

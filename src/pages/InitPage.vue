@@ -18,6 +18,7 @@ import { useSettingsStore } from "../stores/settings";
 import { api, onTaskStream } from "../lib/api";
 import type { DockerStatus, InitCheckResult, InitItem } from "../lib/types";
 import DockerInstaller from "../components/DockerInstaller.vue";
+import StreamLog from "../components/StreamLog.vue";
 
 const store = useServerStore();
 const { current } = storeToRefs(store);
@@ -331,7 +332,7 @@ onBeforeUnmount(() => {
     <!-- pip 安装确认 -->
     <n-modal v-model:show="installShow" preset="card" title="安装工具" style="width: 620px">
       <p style="margin-top: 0; color: #999; font-size: 13px">将在服务器执行：</p>
-      <pre class="ilog" style="height: 120px">{{ installScript }}</pre>
+      <StreamLog :text="installScript" max-height="120px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
           <n-button @click="installShow = false">取消</n-button>
@@ -345,7 +346,7 @@ onBeforeUnmount(() => {
       <p style="margin-top: 0; color: #999; font-size: 13px">
         将以 sudo 在服务器执行（仅限白名单包 curl/git/build-essential/cmake）：
       </p>
-      <pre class="ilog" style="height: 140px">{{ aptScript }}</pre>
+      <StreamLog :text="aptScript" max-height="140px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
           <n-button @click="aptShow = false">取消</n-button>
@@ -391,7 +392,7 @@ onBeforeUnmount(() => {
       :mask-closable="false"
       @close="closeLog"
     >
-      <pre class="ilog">{{ logText || "(等待输出...)" }}</pre>
+      <StreamLog :text="logText" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="logDone != null" :type="logDone === 0 ? 'success' : 'error'">
           退出码 {{ logDone }}
@@ -440,18 +441,6 @@ onBeforeUnmount(() => {
 }
 .init-actions {
   flex: 0 0 auto;
-}
-.ilog {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 12px;
-  border-radius: 6px;
-  height: 360px;
-  overflow: auto;
 }
 .pass-err {
   color: #e88080;

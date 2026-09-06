@@ -99,7 +99,42 @@ fn pbool(p: &serde_json::Value, key: &str) -> bool {
 }
 
 /// 由实例配置组装远端执行命令（前端预览与真正启动共用）
-pub fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
+pub fn norm_args(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// llama-cpp 通用采样/KV 参数（原生与 Docker 共用）
+fn push_llama_common(p: &serde_json::Value, c: &mut Vec<String>) {
+    if let Some(v) = pstr_opt(p, "cacheTypeK") {
+        c.push(format!("--cache-type-k {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "cacheTypeV") {
+        c.push(format!("--cache-type-v {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "flashAttn") {
+        c.push(format!("--flash-attn {}", v));
+    }
+    if let Some(v) = pstr_opt(p, "reasoning") {
+        c.push(format!("--reasoning {}", v));
+    }
+    if pbool(p, "mlock") {
+        c.push("--mlock".into());
+    }
+    if let Some(v) = pnumf_opt(p, "temperature") {
+        c.push(format!("--temperature {}", v));
+    }
+    if let Some(v) = pnum_opt(p, "topK") {
+        c.push(format!("--top-k {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "topP") {
+        c.push(format!("--top-p {}", v));
+    }
+    if let Some(v) = pnumf_opt(p, "minP") {
+        c.push(format!("--min-p {}", v));
+    }
+}
+
+fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
     let p = &cfg.params;
     let model = cfg.model_path.trim();
     if model.is_empty() {
@@ -136,7 +171,7 @@ pub fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 c.push("--enforce-eager".into());
             }
             if let Some(v) = pstr_opt(p, "extraArgs") {
-                c.push(v);
+                c.push(norm_args(&v));
             }
             Ok(c.join(" "))
         }
@@ -157,7 +192,7 @@ pub fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 c.push(format!("--host {}", v));
             }
             if let Some(v) = pstr_opt(p, "extraArgs") {
-                c.push(v);
+                c.push(norm_args(&v));
             }
             Ok(c.join(" "))
         }
@@ -178,8 +213,17 @@ pub fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
             if let Some(v) = pstr_opt(p, "host") {
                 c.push(format!("--host {}", v));
             }
+            push_llama_common(p, &mut c);
+            if pbool(p, "mtp") {
+                c.push("--spec-type draft-mtp".into());
+                c.push(format!(
+                    "--spec-draft-n-max {}",
+                    pnum(p, "specDraftNMax", 4)
+                ));
+                c.push("--spec-draft-p-min 1".into());
+            }
             if let Some(v) = pstr_opt(p, "extraArgs") {
-                c.push(v);
+                c.push(norm_args(&v));
             }
             Ok(c.join(" "))
         }
@@ -205,7 +249,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
     ];
     // 自定义镜像：启动参数完全由用户定义（模型已按原路径挂载进容器）
     if let Some(custom) = pstr_opt(p, "customCmd") {
-        run.push(custom);
+        run.push(norm_args(&custom));
         return Ok(run.join(" "));
     }
     match cfg.framework.as_str() {
@@ -223,7 +267,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
                 run.push("--enforce-eager".into());
             }
             if let Some(v) = pstr_opt(p, "extraArgs") {
-                run.push(v);
+                run.push(norm_args(&v));
             }
         }
         "sglang" => {
@@ -234,7 +278,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
                 run.push(format!("--mem-fraction-static {}", v));
             }
             if let Some(v) = pstr_opt(p, "extraArgs") {
-                run.push(v);
+                run.push(norm_args(&v));
             }
         }
         "llama-cpp" => {
@@ -244,8 +288,17 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push(format!("-c {}", pnum(p, "ctxSize", 4096)));
             run.push("--host 0.0.0.0".into());
             run.push("--metrics".into());
+            push_llama_common(p, &mut run);
+            if pbool(p, "mtp") {
+                run.push("--spec-type draft-mtp".into());
+                run.push(format!(
+                    "--spec-draft-n-max {}",
+                    pnum(p, "specDraftNMax", 4)
+                ));
+                run.push("--spec-draft-p-min 1".into());
+            }
             if let Some(v) = pstr_opt(p, "extraArgs") {
-                run.push(v);
+                run.push(norm_args(&v));
             }
         }
         other => return Err(AppError::Other(format!("未知框架: {other}"))),
@@ -256,7 +309,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
 fn default_docker_image(fw: &str) -> String {
     match fw {
         "vllm" => "vllm/vllm-openai:latest".into(),
-        "1cat-vllm" => "vllm/vllm-openai:latest".into(),
+        "1cat-vllm" => "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5-preview".into(),
         "sglang" => "lmsysorg/sglang:latest-cu129".into(),
         _ => "ghcr.io/ggml-org/llama.cpp:server-cuda".into(),
     }
@@ -365,8 +418,12 @@ echo "==LLAMA=="
 _v=""
 command -v llama-server >/dev/null 2>&1 && _v=$(llama-server --version 2>&1 | head -1)
 _f=$(find "$HOME/RemoteLLM/frameworks" -maxdepth 4 -name llama-server -type f 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -n "$_f" ]; then _v=$("$_f" --version 2>&1 | head -1); fi
 [ -n "$_v" ] && echo "$_v"
-[ -n "$_f" ] && echo "$_f"
+if [ -n "$_f" ]; then
+  _d=$("$_f" --list-devices 2>/dev/null | grep -oE 'CUDA[0-9]+' | head -1)
+  [ -n "$_d" ] && echo "$_f ($_d)" || echo "$_f (CPU only)"
+fi
 [ -z "$_v" ] && [ -z "$_f" ] && echo NONE
 exit 0
 "#;
@@ -432,10 +489,29 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
         );
     }
 
-    let cmd = build_command(cfg).unwrap_or_default();
+    let mut cmd = build_command(cfg).unwrap_or_default();
+    let mut prelude = String::new();
+    // llama-cpp 裸命令名不在 PATH 时自动回退到一键安装目录
+    if cfg.framework == "llama-cpp" {
+        let bin = pstr(&cfg.params, "bin", "llama-server");
+        if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
+            let fw_bin = format!(
+                "{}/frameworks/llama.cpp/build/bin/{}",
+                profile.base_dir.trim_end_matches('/'),
+                bin
+            );
+            prelude = format!(
+                "llama_bin=$(command -v {bin} 2>/dev/null)\n\
+                 [ -z \"$llama_bin\" ] && [ -x {fw_bin} ] && llama_bin={fw_bin}\n\
+                 [ -z \"$llama_bin\" ] && llama_bin={bin}\n"
+            );
+            cmd = format!("\"$llama_bin\"{}", &cmd[bin.len()..]);
+        }
+    }
     format!(
         "mkdir -p {run} {logs}\n\
          if [ -f {pidfile} ] && kill -0 \"$(cat {pidfile})\" 2>/dev/null; then echo ALREADY_RUNNING; exit 3; fi\n\
+         {prelude}\
          nohup {cmd} > {log} 2>&1 &\n\
          echo $! > {pidfile}\n\
          sleep 1\n\
@@ -589,6 +665,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_detect_llama_device_note() {
+        let raw = "\n==VLLM==\nNONE\n==1CAT==\nNONE\n==SGLANG==\nNONE\n==LLAMA==\nversion: 0.4.0-dev (build 1, commit 73a43d1)\n/home/chenyb/RemoteLLM/frameworks/llama.cpp/build/bin/llama-server (CUDA0)\n";
+        let r = parse_detect(raw);
+        let llama = &r[3];
+        assert!(llama.installed);
+        assert_eq!(
+            llama.note.as_deref(),
+            Some("/home/chenyb/RemoteLLM/frameworks/llama.cpp/build/bin/llama-server (CUDA0)")
+        );
+    }
+
+    #[test]
     fn parse_detect_installed() {
         let raw = "\n==VLLM==\nvLLM version 0.9.2\npython-vllm 0.9.2\n==1CAT==\nNONE\n==SGLANG==\nsglang 0.4.5\n==LLAMA==\nllama-server version 1234\n/home/chenyb/RemoteLLM/frameworks/llama-server\n";
         let r = parse_detect(raw);
@@ -603,5 +691,72 @@ mod tests {
         let llama = &r[3];
         assert!(llama.installed);
         assert_eq!(llama.note.as_deref(), Some("/home/chenyb/RemoteLLM/frameworks/llama-server"));
+    }
+
+    fn test_cfg(params: serde_json::Value) -> InstanceConfig {
+        InstanceConfig {
+            id: "t".into(),
+            profile_id: "p".into(),
+            name: "t".into(),
+            framework: "llama-cpp".into(),
+            mode: "native".into(),
+            model_path: "/mnt/m.gguf".into(),
+            port: 8080,
+            docker_image: None,
+            params,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn build_command_trims_extra_args_newline() {
+        // 附加参数末尾带换行会截断 nohup 启动脚本，必须清洗为单空格
+        let cfg = test_cfg(serde_json::json!({
+            "extraArgs": "--spec-draft-p-min 1\n",
+            "host": "0.0.0.0"
+        }));
+        let cmd = build_command(&cfg).unwrap();
+        assert!(!cmd.contains('\n'), "cmd 含换行: {cmd}");
+        assert!(cmd.ends_with("--spec-draft-p-min 1"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_llama_mtp_flags() {
+        let cfg = test_cfg(serde_json::json!({
+            "mtp": true,
+            "specDraftNMax": 4,
+            "extraArgs": "  --foo   bar  "
+        }));
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.contains("--spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 1"), "cmd: {cmd}");
+        // 多余空白压缩为单空格
+        assert!(cmd.contains("--foo bar"), "cmd: {cmd}");
+    }
+
+    fn test_profile() -> crate::profile::ServerProfile {
+        serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "t", "host": "h", "user": "u",
+            "auth": { "type": "password", "password": "x" },
+            "baseDir": "~/RemoteLLM"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn start_script_resolves_bare_llama_bin() {
+        // bin 为裸命令名时：启动脚本注入 PATH 回退解析，nohup 用 "$llama_bin"
+        let mut cfg = test_cfg(serde_json::json!({ "bin": "llama-server" }));
+        cfg.mode = "native".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("llama_bin=$(command -v llama-server"), "script: {s}");
+        assert!(s.contains("~/RemoteLLM/frameworks/llama.cpp/build/bin/llama-server"), "script: {s}");
+        assert!(s.contains("nohup \"$llama_bin\" -m"), "script: {s}");
+
+        // bin 含路径（用户自定义）时不注入解析
+        let mut cfg2 = test_cfg(serde_json::json!({ "bin": "/opt/my/llama-server" }));
+        cfg2.mode = "native".into();
+        let s2 = start_script(&cfg2, &test_profile());
+        assert!(!s2.contains("llama_bin="), "script: {s2}");
+        assert!(s2.contains("nohup /opt/my/llama-server -m"), "script: {s2}");
     }
 }

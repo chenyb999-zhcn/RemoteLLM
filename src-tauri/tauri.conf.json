@@ -12,11 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "RemoteLLM - GPU 服务器管理",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 1000,
-        "minHeight": 640
+      "title": "RemoteLLM - GPU 服务器管理",
+      "width": 1280,
+      "height": 800,
+      "minWidth": 1000,
+      "minHeight": 640,
+      "fullscreen": true
       }
     ],
     "security": {

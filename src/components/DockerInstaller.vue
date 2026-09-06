@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { NButton, NInput, NModal, NSpace, NTag, useMessage } from "naive-ui";
 import { api, onTaskStream } from "../lib/api";
+import StreamLog from "./StreamLog.vue";
 import type { DockerStatus } from "../lib/types";
 
 const emit = defineEmits<{
@@ -200,7 +201,7 @@ defineExpose({ askInstall, askAuthorize, askProxy });
         当前用户没有 Docker 使用权限，将确保 daemon 运行并把用户加入 docker 组：
       </template>
     </p>
-    <pre class="dlog">{{ confirmScript }}</pre>
+    <StreamLog :text="confirmScript" :auto-scroll="false" />
     <template #footer>
       <n-space justify="end">
         <n-button @click="cancelConfirm">取消</n-button>
@@ -249,7 +250,7 @@ defineExpose({ askInstall, askAuthorize, askProxy });
     :mask-closable="false"
     @close="closeLog"
   >
-    <pre class="dlog">{{ logText || "(等待输出...)" }}</pre>
+    <StreamLog :text="logText" />
     <n-space justify="end" style="margin-top: 12px">
       <n-tag v-if="logDone != null" :type="logDone === 0 ? 'success' : 'error'">
         退出码 {{ logDone }}
@@ -262,18 +263,6 @@ defineExpose({ askInstall, askAuthorize, askProxy });
 </template>
 
 <style scoped>
-.dlog {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 12px;
-  border-radius: 6px;
-  max-height: 320px;
-  overflow: auto;
-}
 .pass-err {
   color: #e88080;
   font-size: 12px;

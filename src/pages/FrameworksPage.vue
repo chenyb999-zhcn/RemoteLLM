@@ -39,6 +39,7 @@ import { useInstanceStore } from "../stores/instance";
 import { useSettingsStore } from "../stores/settings";
 import { api, onTaskStream } from "../lib/api";
 import DockerInstaller from "../components/DockerInstaller.vue";
+import StreamLog from "../components/StreamLog.vue";
 import type { DockerStatus, InstanceConfig, LocalImage } from "../lib/types";
 
 interface ParamDef {
@@ -84,7 +85,7 @@ const FW_META: Record<string, FwMeta> = {
     label: "1Cat-vLLM",
     desc: "vLLM fork（含 sm70/V100 支持）",
     defaultPort: 8000,
-    dockerImage: "vllm/vllm-openai:latest",
+    dockerImage: "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5-preview",
     params: vllmParams.map((p) =>
       p.key === "bin" ? { ...p, default: "1cat-vllm" } : p,
     ),
@@ -113,6 +114,29 @@ const FW_META: Record<string, FwMeta> = {
       { key: "ctxSize", label: "上下文 -c", type: "number", default: 4096 },
       { key: "threads", label: "线程数", type: "number", default: 0, placeholder: "0=自动" },
       { key: "host", label: "host", type: "text", default: "0.0.0.0" },
+      {
+        key: "cacheTypeK",
+        label: "KV缓存K类型",
+        type: "select",
+        options: ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "iq4_xs"],
+        default: "q4_0",
+      },
+      {
+        key: "cacheTypeV",
+        label: "KV缓存V类型",
+        type: "select",
+        options: ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "iq4_xs"],
+        default: "q4_0",
+      },
+      { key: "flashAttn", label: "Flash Attention", type: "select", options: ["on", "off"], default: "on" },
+      { key: "reasoning", label: "Reasoning 思考", type: "select", options: ["off", "on"], default: "off" },
+      { key: "mlock", label: "mlock 内存锁定", type: "switch", default: true },
+      { key: "temperature", label: "temperature", type: "number", default: 0.2, step: 0.05 },
+      { key: "topK", label: "top-k", type: "number", default: 40 },
+      { key: "topP", label: "top-p", type: "number", default: 0.95, step: 0.01 },
+      { key: "minP", label: "min-p", type: "number", default: 0.01, step: 0.01 },
+      { key: "mtp", label: "MTP 投机解码", type: "switch", default: false },
+      { key: "specDraftNMax", label: "MTP 步数", type: "number", default: 4 },
       { key: "extraArgs", label: "附加参数", type: "text" },
     ],
   },
@@ -704,6 +728,7 @@ const visibleParams = computed(() =>
   meta.value.params.filter((p) => {
     if (p.nativeOnly && form.mode === "docker") return false;
     if (p.dockerOnly && form.mode === "native") return false;
+    if (p.key === "specDraftNMax" && !form.params.mtp) return false;
     return true;
   }),
 );
@@ -828,7 +853,7 @@ watch(
             <div class="fw-desc">{{ c.desc }}</div>
             <div v-if="c.version" class="fw-version">{{ c.version }}</div>
             <n-space size="small" style="margin-top: 8px">
-              <n-button v-if="c.nativeTool" size="tiny" @click="askInstall(c.nativeTool, c.label)">
+              <n-button v-if="c.nativeTool && !c.installed" size="tiny" @click="askInstall(c.nativeTool, c.label)">
                 一键安装
               </n-button>
             </n-space>
@@ -940,7 +965,7 @@ watch(
       <p style="margin-top: 0; color: #999; font-size: 13px">
         将在服务器执行以下命令：
       </p>
-      <pre class="dllog" style="height: 140px">{{ installScript }}</pre>
+      <StreamLog :text="installScript" max-height="140px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
           <n-button @click="installShow = false">取消</n-button>
@@ -958,7 +983,7 @@ watch(
       :mask-closable="false"
       @close="closeInstall"
     >
-      <pre class="dllog">{{ installStream || "(等待输出...)" }}</pre>
+      <StreamLog :text="installStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="installDone != null" :type="installDone === 0 ? 'success' : 'error'">
           退出码 {{ installDone }}
@@ -978,7 +1003,7 @@ watch(
       :mask-closable="false"
       @close="closePull"
     >
-      <pre class="dllog">{{ pullStream || "(等待输出...)" }}</pre>
+      <StreamLog :text="pullStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="pullDone != null" :type="pullDone === 0 ? 'success' : 'error'">
           退出码 {{ pullDone }}
@@ -991,7 +1016,7 @@ watch(
 
     <!-- GPU 实测 -->
     <n-modal v-model:show="gpuTestShow" preset="card" title="GPU 实测" style="width: 720px">
-      <pre class="dllog">{{ gpuTestOut || "(无输出)" }}</pre>
+      <StreamLog :text="gpuTestOut" placeholder="(无输出)" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="gpuTestOk != null" :type="gpuTestOk ? 'success' : 'error'">
           {{ gpuTestOk ? "GPU 可用" : "GPU 不可用" }}
@@ -1056,17 +1081,6 @@ watch(
   font-size: 12px;
   white-space: pre;
   overflow-x: auto;
-}
-.dllog {
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 12px;
-  border-radius: 6px;
-  overflow: auto;
 }
 .logbox {
   font-family: Consolas, "Courier New", monospace;
