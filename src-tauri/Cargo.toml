@@ -1,6 +1,6 @@
 [package]
 name = "remotellm"
-version = "0.1.1"
+version = "0.1.2"
 description = "RemoteLLM - GPU 服务器远程管理（引擎管理/模型下载/实时监控）"
 authors = ["chenyb"]
 edition = "2021"

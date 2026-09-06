@@ -36,11 +36,22 @@ fn pip_install(pkg: &str, prefix: &str) -> String {
     )
 }
 
-/// 根据工具名组装安装脚本
+/// 密码登录的档案可提取登录密码，作为 llama.cpp 工具链自愈的 sudo 密码
+/// （若 sudo 密码与登录密码不同，安装会失败并提示走「初始化检查」页）
+fn sudo_password(profile: &ServerProfile) -> Option<&str> {
+    match &profile.auth {
+        crate::profile::AuthMethod::Password { password } if !password.is_empty() => Some(password),
+        _ => None,
+    }
+}
+
+/// 根据工具名组装安装脚本；sudo_pass 用于 llama.cpp 工具链自愈的密码 sudo 分支
+/// （preview 传占位符避免泄漏真实密码）
 pub fn build_install_script(
     profile: &ServerProfile,
     settings: &crate::settings::AppSettings,
     tool: &str,
+    sudo_pass: Option<&str>,
 ) -> Result<String, AppError> {
     let fw_dir = format!("{}/frameworks", profile.base_dir.trim_end_matches('/'));
     let onecat_repo = profile
@@ -50,6 +61,23 @@ pub fn build_install_script(
         .unwrap_or_else(default_onecat_repo);
     let onecat_repo_q = onecat_repo.replace('\'', "'\\''");
     let proxy = crate::settings::proxy_env_prefix(settings);
+    // llama.cpp 工具链缺失时的密码 sudo 分支：root / 免密 sudo 之外的第三条路
+    let llama_else = match sudo_pass {
+        Some(pw) => format!(
+            "{{ {u} && {i}; }} || {{ echo \"ERROR: 工具链安装失败（sudo 密码与登录密码不同或网络问题）。请先在「初始化检查」页安装 build-essential + cmake 后重试\"; exit 1; }}",
+            u = crate::docker::wrap_line(
+                "apt-get update -y",
+                crate::docker::SudoMode::SudoPass,
+                Some(pw)
+            ),
+            i = crate::docker::wrap_line(
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake",
+                crate::docker::SudoMode::SudoPass,
+                Some(pw)
+            ),
+        ),
+        None => "echo \"ERROR: 缺少 C++ 工具链（g++/make/cmake）。请先在「初始化检查」页安装 build-essential + cmake 后重试（或改用密码方式连接可自动安装）\"; exit 1".into(),
+    };
 
     Ok(match tool {
         "modelscope" => pip_install("modelscope", &proxy),
@@ -71,12 +99,12 @@ pub fn build_install_script(
               elif sudo -n true 2>/dev/null; then\n\
               {{ sudo apt-get update -y && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake; }} || {{ echo \"ERROR: 工具链安装失败（sudo apt-get）\"; exit 1; }}\n\
               else\n\
-              echo \"ERROR: 缺少 C++ 工具链（g++/make/cmake）且当前用户无免密 sudo。请在「初始化检查」页安装 build-essential + cmake 后重试。\"\n\
-              exit 1\n\
+              {llama_else}\n\
               fi\n\
+              command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1 || {{ echo \"ERROR: 工具链仍不完整（g++/make/cmake），请在「初始化检查」页安装 build-essential + cmake\"; exit 1; }}\n\
               fi\n\
               if [ ! -d llama.cpp ]; then git clone --depth 1 https://github.com/ggml-org/llama.cpp; fi\n\
-              cd llama.cpp && cmake -B build && cmake --build build -j --target llama-server 2>&1"
+              cd llama.cpp && cmake -B build && cmake --build build -j\"$(awk '/^MemTotal/ {{j=int($2/1024/1500); if(j<1)j=1; print j}}' /proc/meminfo)\" --target llama-server 2>&1"
         ),
         "parser-libs" => format!(
             "{proxy}{boot}python3 -m pip install -U gguf safetensors 2>&1 \
@@ -106,7 +134,8 @@ pub fn install_preview(
 ) -> Result<String, AppError> {
     let profile = get_profile(&app, &profile_id)?;
     let settings = crate::settings::load_settings(&app)?;
-    build_install_script(&profile, &settings, &tool)
+    // 预览用占位符代替真实 sudo 密码
+    build_install_script(&profile, &settings, &tool, Some("******"))
 }
 
 #[tauri::command]
@@ -118,7 +147,7 @@ pub async fn install_start(
 ) -> Result<String, AppError> {
     let profile = get_profile(&app, &profile_id)?;
     let settings = crate::settings::load_settings(&app)?;
-    let script = build_install_script(&profile, &settings, &tool)?;
+    let script = build_install_script(&profile, &settings, &tool, sudo_password(&profile))?;
     if !state.conns.lock().await.contains_key(&profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
@@ -149,29 +178,38 @@ mod tests {
 
     #[test]
     fn llama_cpp_toolchain_guard() {
-        let s = build_install_script(&profile(), &crate::settings::AppSettings::default(), "llama-cpp").unwrap();
+        let d = crate::settings::AppSettings::default();
+        // 密码登录档案：else 分支用 printf|sudo -S 密码管道自动装工具链
+        let s = build_install_script(&profile(), &d, "llama-cpp", Some("x")).unwrap();
         assert!(s.contains("command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1"));
         assert!(s.contains("apt-get install -y build-essential cmake"));
         assert!(s.contains("sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake"));
-        assert!(s.contains("无免密 sudo"));
-        assert!(s.contains("初始化检查"));
+        assert!(s.contains("printf '%s\\n' 'x' | sudo -S -p '' apt-get update -y"));
+        assert!(s.contains("printf '%s\\n' 'x' | sudo -S -p '' DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake"));
+        // 密钥登录档案：给出「初始化检查」指引
+        let mut k = profile();
+        k.auth = crate::profile::AuthMethod::Key { key_path: "~/.ssh/id".into(), passphrase: None };
+        let s2 = build_install_script(&k, &d, "llama-cpp", None).unwrap();
+        assert!(s2.contains("请在「初始化检查」页安装 build-essential + cmake"));
+        assert!(!s2.contains("sudo -S"));
         // 白名单外不得出现其他 apt 包
         assert!(!s.contains("apt-get install -y g++"));
-        // 配置输出不再吞掉
+        // 配置输出不再吞掉；编译并发按内存自适应（每 job 约 1.5G）
         assert!(!s.contains("cmake -B build >/dev/null"));
-        assert!(s.contains("cmake -B build && cmake --build build -j --target llama-server"));
+        assert!(s.contains("cmake -B build && cmake --build build -j\"$(awk '/^MemTotal/ {j=int($2/1024/1500); if(j<1)j=1; print j}' /proc/meminfo)\" --target llama-server"));
     }
 
     #[test]
     fn pip_tools_have_bootstrap() {
+        let d = crate::settings::AppSettings::default();
         for tool in ["vllm", "sglang", "modelscope", "huggingface", "1cat-vllm", "parser-libs"] {
-            let s = build_install_script(&profile(), &crate::settings::AppSettings::default(), tool).unwrap();
+            let s = build_install_script(&profile(), &d, tool, None).unwrap();
             assert!(s.contains("python3 -m pip --version"), "tool={tool}");
             assert!(s.contains("bootstrap.pypa.io/get-pip.py"), "tool={tool}");
             assert!(!s.contains("apt-get"), "tool={tool}");
         }
         // llama-cpp 纯 cmake 编译，不需要 pip 引导
-        let s = build_install_script(&profile(), &crate::settings::AppSettings::default(), "llama-cpp").unwrap();
+        let s = build_install_script(&profile(), &d, "llama-cpp", None).unwrap();
         assert!(!s.contains("get-pip.py"));
     }
 }
