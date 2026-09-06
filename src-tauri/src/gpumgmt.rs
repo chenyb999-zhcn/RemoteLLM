@@ -394,6 +394,7 @@ pub async fn gpu_kill(
     pid: u32,
 ) -> Result<String, AppError> {
     let user = get_profile_user(&app, &profile_id)?;
+    crate::applog::info("task", &format!("gpu_kill profile={profile_id} pid={pid}"));
     let uq = format!("'{}'", user.replace('\'', "'\\''"));
     let script = format!(
         "_u=$(ps -o user= -p {pid} 2>/dev/null | tr -d ' ')\n\
@@ -503,6 +504,13 @@ pub async fn gpu_set_start(
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("gset-{}", chrono::Utc::now().timestamp_millis());
+    crate::applog::info(
+        "task",
+        &format!(
+            "gpu_set profile={profile_id} action={action} gpu={:?} value={value}",
+            gpu
+        ),
+    );
     crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
     Ok(task_id)
 }

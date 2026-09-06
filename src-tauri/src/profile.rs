@@ -129,6 +129,19 @@ pub async fn save_profile(
 ) -> Result<Vec<ServerProfile>, AppError> {
     let mut profiles = load_profiles(&app)?;
     let id = profile.id.clone();
+    crate::applog::info(
+        "app",
+        &format!(
+            "profile saved name={} host={} user={} auth={}",
+            profile.name,
+            profile.addr(),
+            profile.user,
+            match &profile.auth {
+                crate::profile::AuthMethod::Password { .. } => "password",
+                crate::profile::AuthMethod::Key { .. } => "key",
+            }
+        ),
+    );
     if let Some(p) = profiles.iter_mut().find(|p| p.id == id) {
         *p = profile;
     } else {

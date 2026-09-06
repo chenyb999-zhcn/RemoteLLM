@@ -34,6 +34,12 @@
 - sshpass（密码登录调试）：`C:\msys64\usr\bin\sshpass.exe -p <pass> ssh -o StrictHostKeyChecking=no <user>@<host> "<cmd>"`
 - E2E 驱动脚本放 `C:\msys64\tmp\opencode\`（.cjs，WebView 调试口 PORT，产物引用 `target\release\remotellm.exe`）
 
+## 日志（RemoteLLM.log）
+
+- 位置：**exe 同目录** `RemoteLLM.log`（不可写时降级到系统日志目录）。跨天轮转为 `RemoteLLM.log.YYYY-MM-DD`，保留 31 天，总量上限 500MB（超限从最旧删）。
+- 实现：`src-tauri/src/applog.rs`（`info/warn/error`、`cmd_summary` 单行、`cmd_block` 完整命令块）。所有 SSH 命令经 `ssh.rs run/run_stream` 咽喉自动记录；业务动作在 install/docker/initcheck/gpumgmt/models 各有一条 `[task]` 语义行。
+- **脱敏**：`mask_secrets` 把 `printf '%s\n' '密码' | sudo` 与 `HF_TOKEN=…` 替换为 `***`；改远程脚本的 sudo 包装格式时，保持该模式或同步更新脱敏/单测。
+
 ## 远程脚本设计禁忌（sudo 包装）
 
 - `command` 是 shell 内建，**不能**被包装成 `sudo command …`（sudo 找不到该可执行文件）。

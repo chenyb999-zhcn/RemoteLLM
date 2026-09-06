@@ -952,6 +952,14 @@ pub async fn list_local_models(
                     ),
                 };
                 if let Some(entry) = hit {
+                    crate::applog::info(
+                        "app",
+                        &format!(
+                            "model_cache hit profile={profile_id} fp={} n={}",
+                            f,
+                            light_list.len()
+                        ),
+                    );
                     return Ok(merge_meta(light_list, &entry.list));
                 }
             }
@@ -987,6 +995,10 @@ pub async fn list_local_models(
             .insert(profile_id.clone(), entry.clone());
         save_cache_entry(&app, &profile_id, &entry);
     }
+    crate::applog::info(
+        "app",
+        &format!("model_cache full_scan profile={profile_id} n={}", list.len()),
+    );
     Ok(list)
 }
 
@@ -1151,6 +1163,12 @@ pub async fn model_download_start(
     if !state.conns.lock().await.contains_key(&profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
+    crate::applog::info(
+        "task",
+        &format!(
+            "model_download profile={profile_id} source={source} model={model_id} dest={dest}"
+        ),
+    );
     crate::ssh::SshSession::spawn_stream(app, profile_id, cmd, task_id.clone());
     Ok(task_id)
 }
@@ -1192,6 +1210,7 @@ pub async fn model_delete(
             shq(&target)
         ),
     };
+    crate::applog::info("task", &format!("model_delete profile={profile_id} rel={rel}"));
     let out = run_on(&state, &profile_id, &cmd).await?;
     Ok(out.stdout.trim().to_string())
 }

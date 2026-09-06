@@ -121,6 +121,14 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, AppError> {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSettings, AppError> {
     persist_settings(&app, &settings)?;
+    crate::applog::info(
+        "app",
+        &format!(
+            "settings saved proxy={} hf_token={}",
+            if settings.proxy_enabled { "on" } else { "off" },
+            if settings.hf_token.trim().is_empty() { "empty" } else { "set" }
+        ),
+    );
     Ok(settings)
 }
 

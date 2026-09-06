@@ -1,3 +1,4 @@
+mod applog;
 mod docker;
 mod envcheck;
 mod error;
@@ -13,6 +14,8 @@ mod settings;
 mod ssh;
 
 use std::collections::HashMap;
+
+use tauri::Manager;
 
 pub struct AppState {
     pub conns: tokio::sync::Mutex<HashMap<String, ssh::SshSession>>,
@@ -30,6 +33,9 @@ pub fn run() {
             model_cache: std::sync::Mutex::new(HashMap::new()),
         })
         .setup(|app| {
+            let log_dir = app.path().app_log_dir().ok();
+            applog::init(log_dir);
+            applog::info("app", &format!("started v{}", env!("CARGO_PKG_VERSION")));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = models::refresh_ms_hotlist_if_stale(&handle).await;

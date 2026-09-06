@@ -320,6 +320,7 @@ pub async fn docker_install_start(
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("dinst-{}", chrono::Utc::now().timestamp_millis());
+    crate::applog::info("task", &format!("docker_install profile={profile_id}"));
     crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
     Ok(task_id)
 }
@@ -341,6 +342,7 @@ pub async fn docker_authorize_start(
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("dauth-{}", chrono::Utc::now().timestamp_millis());
+    crate::applog::info("task", &format!("docker_authorize profile={profile_id}"));
     crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
     Ok(task_id)
 }
@@ -416,6 +418,13 @@ pub async fn docker_proxy_start(
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("dproxy-{}", chrono::Utc::now().timestamp_millis());
+    crate::applog::info(
+        "task",
+        &format!(
+            "docker_proxy profile={profile_id} url={}",
+            proxy_url.as_deref().unwrap_or("<remove>")
+        ),
+    );
     crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
     Ok(task_id)
 }
@@ -464,6 +473,7 @@ pub async fn docker_pull_start(
     }
     let script = format!("docker pull '{}' 2>&1", shq(&image.trim().to_string()));
     let task_id = format!("dpull-{}", chrono::Utc::now().timestamp_millis());
+    crate::applog::info("task", &format!("docker_pull profile={profile_id} image={image}"));
     crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
     Ok(task_id)
 }

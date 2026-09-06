@@ -506,17 +506,20 @@ pub fn build_items(
     match (&s.python, &s.pip) {
         (Some(p), Some(_)) => v.push(item("tools.python", "tools", "Python3 + pip", "ok", Some(p.clone()))),
         (Some(p), None) => v.push(InitItem {
-            manual: Some("sudo apt install python3-pip".into()),
+            manual: Some(
+                "装框架时会自动用官网 get-pip.py 安装；或手动: curl -sSL https://bootstrap.pypa.io/get-pip.py | python3"
+                    .into(),
+            ),
             ..item(
                 "tools.python",
                 "tools",
                 "Python3 + pip",
                 "warn",
-                Some(format!("{p}，pip 缺失")),
+                Some(format!("{p}，pip 缺失（装框架时自动 get-pip.py）")),
             )
         }),
         _ => v.push(InitItem {
-            manual: Some("sudo apt install python3 python3-pip".into()),
+            manual: Some("sudo apt install python3（装框架时会自动用 get-pip.py 补 pip）".into()),
             ..item(
                 "tools.python",
                 "tools",
@@ -737,6 +740,10 @@ pub async fn apt_install_start(
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("apt-{}", chrono::Utc::now().timestamp_millis());
+    crate::applog::info(
+        "task",
+        &format!("apt_install profile={profile_id} pkgs={}", pkgs.join(",")),
+    );
     crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
     Ok(task_id)
 }

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
@@ -105,6 +105,7 @@ impl SshSession {
 
     /// 执行短命令并收集全部输出
     pub async fn run(&mut self, command: &str) -> Result<CmdOutput, AppError> {
+        let started = Instant::now();
         let mut channel = self
             .handle
             .channel_open_session()
@@ -126,11 +127,33 @@ impl SshSession {
                 _ => {}
             }
         }
-        Ok(CmdOutput {
+        let out = CmdOutput {
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             exit_code: code.unwrap_or(255),
-        })
+        };
+        let dur = started.elapsed().as_millis();
+        let summary = format!(
+            "run exit={} dur={}ms out={}B err={}B",
+            out.exit_code,
+            dur,
+            out.stdout.len(),
+            out.stderr.len()
+        );
+        let is_script = command.contains('\n') || command.chars().count() > 200;
+        if is_script {
+            let result = if out.exit_code == 0 {
+                "-".to_string()
+            } else {
+                let first = out.stderr.lines().next().unwrap_or("").trim();
+                let first: String = first.chars().take(200).collect();
+                format!("stderr: {first}")
+            };
+            crate::applog::cmd_block("ssh", &summary, command, Some(&result));
+        } else {
+            crate::applog::cmd_summary("ssh", &summary, command);
+        }
+        Ok(out)
     }
 
     /// 后台执行长命令：调用方立即返回（task_id 由调用方生成），
@@ -176,6 +199,8 @@ impl SshSession {
         task_id: &str,
         app: &AppHandle,
     ) -> Result<u32, AppError> {
+        let started = Instant::now();
+        crate::applog::cmd_block("ssh", &format!("run_stream task={task_id} begin"), command, None);
         let mut channel = self
             .handle
             .channel_open_session()
@@ -214,6 +239,13 @@ impl SshSession {
             }
         }
         let exit_code = code.unwrap_or(255);
+        crate::applog::info(
+            "ssh",
+            &format!(
+                "run_stream task={task_id} exit={exit_code} dur={}ms",
+                started.elapsed().as_millis()
+            ),
+        );
         let _ = app.emit(
             "task://exit",
             StreamDone {
@@ -230,7 +262,29 @@ pub async fn ssh_connect(
     state: State<'_, crate::AppState>,
     profile: ServerProfile,
 ) -> Result<ConnInfo, AppError> {
-    let mut session = SshSession::connect(&profile).await?;
+    let started = Instant::now();
+    let connect_result = SshSession::connect(&profile).await;
+    match &connect_result {
+        Ok(_) => crate::applog::info(
+            "ssh",
+            &format!(
+                "connect ok {}@{} dur={}ms",
+                profile.user,
+                profile.addr(),
+                started.elapsed().as_millis()
+            ),
+        ),
+        Err(e) => crate::applog::error(
+            "ssh",
+            &format!(
+                "connect fail {}@{}: {}",
+                profile.user,
+                profile.addr(),
+                e
+            ),
+        ),
+    }
+    let mut session = connect_result?;
     let version = session
         .run("cat /etc/issue 2>/dev/null | head -1")
         .await
@@ -251,6 +305,7 @@ pub async fn ssh_connect(
 
 #[tauri::command]
 pub async fn ssh_disconnect(state: State<'_, crate::AppState>, id: String) -> Result<(), AppError> {
+    crate::applog::info("ssh", &format!("disconnect {id}"));
     state.conns.lock().await.remove(&id);
     Ok(())
 }
