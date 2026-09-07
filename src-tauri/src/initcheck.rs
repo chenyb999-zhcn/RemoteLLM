@@ -79,7 +79,12 @@ _p=$(python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/nul
 [ -z "$_v" ] && [ -z "$_p" ] && echo NONE
 echo "==1CAT=="
 _v=""
-command -v 1cat-vllm >/dev/null 2>&1 && _v=$(1cat-vllm --version 2>/dev/null | head -1)
+# 1Cat-vLLM 预编译 wheel 装的是 `vllm` 入口，且跑在 3.12 venv 里；
+# 先查 PATH 上的 1cat-vllm，再回退到 venv 的 vllm 二进制
+if command -v 1cat-vllm >/dev/null 2>&1; then _v=$(1cat-vllm --version 2>/dev/null | head -1); fi
+if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" ]; then
+  _v=$("$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" --version 2>/dev/null | head -1)
+fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 echo "==SGLANG=="

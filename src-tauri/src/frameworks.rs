@@ -264,7 +264,8 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
 
     match cfg.framework.as_str() {
         "vllm" | "1cat-vllm" => {
-            let bin = pstr(p, "bin", if cfg.framework == "1cat-vllm" { "1cat-vllm" } else { "vllm" });
+            // 1Cat-vLLM 预编译 wheel 只装 `vllm` 入口（无 1cat-vllm 命令），且需跑在 3.12 venv 里
+            let bin = pstr(p, "bin", "vllm");
             let mut c = vec![
                 format!("{} serve", bin),
                 m.clone(),
@@ -477,7 +478,12 @@ _p=$(python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/nul
 [ -z "$_v" ] && [ -z "$_p" ] && echo NONE
 echo "==1CAT=="
 _v=""
-command -v 1cat-vllm >/dev/null 2>&1 && _v=$(1cat-vllm --version 2>/dev/null | head -1)
+# 1Cat-vLLM 预编译 wheel 装的是 `vllm` 入口，且跑在 3.12 venv 里；
+# 先查 PATH 上的 1cat-vllm/vllm，再回退到 venv 的 vllm 二进制
+if command -v 1cat-vllm >/dev/null 2>&1; then _v=$(1cat-vllm --version 2>/dev/null | head -1); fi
+if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" ]; then
+  _v=$("$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" --version 2>/dev/null | head -1)
+fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 echo "==SGLANG=="
@@ -590,6 +596,24 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
                  [ -z \"$llama_bin\" ] && llama_bin={bin}\n"
             );
             cmd = format!("\"$llama_bin\"{}", &cmd[bin.len()..]);
+        }
+    }
+    // 1Cat-vLLM 装在 3.12 venv 里（系统 python3 是 3.14，跑不了 1Cat），
+    // 裸命令名不在 PATH 时回退到 venv 的 vllm 二进制
+    if cfg.framework == "1cat-vllm" {
+        let bin = pstr(&cfg.params, "bin", "vllm");
+        if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
+            let venv_bin = format!(
+                "{}/frameworks/1cat-venv/bin/{}",
+                profile.base_dir.trim_end_matches('/'),
+                bin
+            );
+            prelude = format!(
+                "cat_bin=$(command -v {bin} 2>/dev/null)\n\
+                 [ -z \"$cat_bin\" ] && [ -x {venv_bin} ] && cat_bin={venv_bin}\n\
+                 [ -z \"$cat_bin\" ] && cat_bin={bin}\n"
+            );
+            cmd = format!("\"$cat_bin\"{}", &cmd[bin.len()..]);
         }
     }
     format!(
@@ -1021,6 +1045,24 @@ mod tests {
         let s2 = start_script(&cfg2, &test_profile());
         assert!(!s2.contains("llama_bin="), "script: {s2}");
         assert!(s2.contains("nohup /opt/my/llama-server -m"), "script: {s2}");
+    }
+
+    #[test]
+    fn start_script_resolves_bare_onecat_bin_to_venv() {
+        // 1Cat-vLLM 装在 3.12 venv，裸命令名回退到 venv 的 vllm 二进制
+        let mut cfg = test_cfg_fw("1cat-vllm", serde_json::json!({}));
+        cfg.mode = "native".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("cat_bin=$(command -v vllm"), "script: {s}");
+        assert!(s.contains("~/RemoteLLM/frameworks/1cat-venv/bin/vllm"), "script: {s}");
+        assert!(s.contains("nohup \"$cat_bin\" serve"), "script: {s}");
+
+        // bin 含路径时不注入解析
+        let mut cfg2 = test_cfg_fw("1cat-vllm", serde_json::json!({ "bin": "/opt/venv/bin/vllm" }));
+        cfg2.mode = "native".into();
+        let s2 = start_script(&cfg2, &test_profile());
+        assert!(!s2.contains("cat_bin="), "script: {s2}");
+        assert!(s2.contains("nohup /opt/venv/bin/vllm serve"), "script: {s2}");
     }
 
     #[test]

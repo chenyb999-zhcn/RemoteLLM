@@ -115,6 +115,13 @@ pub fn build_install_script(
         "sglang" => pip_install_sglang(&proxy, &idx),
         "1cat-vllm" => format!(
             "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
+              _pyver=$(python3 -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0)\n\
+              if [ \"$_pyver\" != \"312\" ]; then\n\
+              echo \"ERROR: 1Cat-vLLM 仅支持 Python 3.12（预编译 wheel 为 cp312，源码构建的 flash-attn 也拒绝 3.13/3.14）。\"\n\
+              echo \"       当前 Python 版本: $(python3 --version 2>&1)\"\n\
+              echo \"       请先安装 Python 3.12（如 uv python install 3.12 或 deadsnakes PPA），再用 3.12 解释器安装。\"\n\
+              exit 1\n\
+              fi\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
               {boot}python3 -m pip install {idx} -e . 2>&1 || python3 -m pip install {idx} -e . --break-system-packages 2>&1",
             boot = pip_bootstrap()
@@ -306,6 +313,21 @@ mod tests {
         assert!(s.contains("pip install --index-url"), "1cat 未带 index-url: {s}");
         assert!(s.contains("simple/ -e ."), "1cat index 应在 -e 之前: {s}");
         assert!(!s.contains("-e --index-url"), "1cat 出现 -e --index-url 错误顺序: {s}");
+    }
+
+    #[test]
+    fn onecat_install_requires_python_312() {
+        // 1Cat-vLLM 预编译 wheel 仅 cp312，源码 flash-attn 也拒绝 3.13/3.14，
+        // 安装前必须预检 Python 版本，非 3.12 直接失败，避免白跑 20 分钟编译
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "1cat-vllm", None).unwrap();
+        assert!(s.contains("version_info[0]*100+sys.version_info[1]"), "1cat 未探测 Python 版本: {s}");
+        assert!(s.contains("\"312\""), "1cat 未校验 3.12: {s}");
+        assert!(s.contains("仅支持 Python 3.12"), "1cat 缺版本错误提示: {s}");
+        // 预检必须在 git clone 之前（先失败再拉代码）
+        let chk = s.find("version_info").unwrap();
+        let clone = s.find("git clone").unwrap();
+        assert!(chk < clone, "1cat 版本预检应在 clone 之前");
     }
 
     #[test]
