@@ -116,7 +116,7 @@ pub fn build_install_script(
         "1cat-vllm" => format!(
             "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
-              {boot}python3 -m pip install -e {idx} . 2>&1 || python3 -m pip install -e {idx} . --break-system-packages 2>&1",
+              {boot}python3 -m pip install {idx} -e . 2>&1 || python3 -m pip install {idx} -e . --break-system-packages 2>&1",
             boot = pip_bootstrap()
         ),
         "llama-cpp" => format!(
@@ -295,6 +295,17 @@ mod tests {
         // llama-cpp 纯 cmake 编译，不需要 pip 引导
         let s = build_install_script(&profile(), &d, "llama-cpp", None).unwrap();
         assert!(!s.contains("get-pip.py"));
+    }
+
+    #[test]
+    fn onecat_editable_install_index_before_e() {
+        // 回归：editable 安装必须是 `pip install {index} -e .`，
+        // 若写成 `pip install -e {index} .`，pip 会把 --index-url 当成 -e 的目标而报错
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "1cat-vllm", None).unwrap();
+        assert!(s.contains("pip install --index-url"), "1cat 未带 index-url: {s}");
+        assert!(s.contains("simple/ -e ."), "1cat index 应在 -e 之前: {s}");
+        assert!(!s.contains("-e --index-url"), "1cat 出现 -e --index-url 错误顺序: {s}");
     }
 
     #[test]
