@@ -187,21 +187,8 @@ fn push_vllm_common(p: &serde_json::Value, c: &mut Vec<String>) {
     if let Some(v) = pstr_opt(p, "seed") {
         c.push(format!("--seed {}", v));
     }
-    if let Some(v) = pnumf_opt(p, "temperature") {
-        c.push(format!("--temperature {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "topP") {
-        c.push(format!("--top-p {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "topK") {
-        c.push(format!("--top-k {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "repetitionPenalty") {
-        c.push(format!("--repetition-penalty {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "maxTokens") {
-        c.push(format!("--max-tokens {}", v));
-    }
+    // 注意：vllm serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
+    // 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
     if pbool(p, "trustRemoteCode") {
         c.push("--trust-remote-code".into());
     }
@@ -219,7 +206,7 @@ fn push_sglang_common(p: &serde_json::Value, c: &mut Vec<String>) {
         c.push(format!("--host {}", v));
     }
     if let Some(v) = pnum_opt(p, "maxNumSeqs") {
-        c.push(format!("--max-num-reqs {}", v));
+        c.push(format!("--max-running-requests {}", v));
     }
     if let Some(v) = pnum_opt(p, "chunkedPrefillSize") {
         c.push(format!("--chunked-prefill-size {}", v));
@@ -230,21 +217,8 @@ fn push_sglang_common(p: &serde_json::Value, c: &mut Vec<String>) {
     if let Some(v) = pstr_opt(p, "quantization") {
         c.push(format!("--quantization {}", v));
     }
-    if let Some(v) = pnumf_opt(p, "temperature") {
-        c.push(format!("--temperature {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "topP") {
-        c.push(format!("--top-p {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "topK") {
-        c.push(format!("--top-k {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "repetitionPenalty") {
-        c.push(format!("--repetition-penalty {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "maxTokens") {
-        c.push(format!("--max-tokens {}", v));
-    }
+    // 注意：sglang serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
+    // 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
     if pbool(p, "trustRemoteCode") {
         c.push("--trust-remote-code".into());
     }
@@ -908,7 +882,9 @@ mod tests {
     }
 
     #[test]
-    fn build_command_vllm_sampling_flags() {
+    fn build_command_vllm_flags_no_sampling() {
+        // vllm serve 无 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
+        // 启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
         let cfg = test_cfg_fw(
             "vllm",
             serde_json::json!({
@@ -936,19 +912,17 @@ mod tests {
             "--max-num-seqs 64",
             "--quantization fp8",
             "--trust-remote-code",
-            "--temperature 0.3",
-            "--top-p 0.9",
-            "--top-k 20",
-            "--repetition-penalty 1.1",
-            "--max-tokens 1024",
             "--limit-concurrency 32",
         ] {
             assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
         }
+        for bad in ["--temperature", "--top-p", "--top-k", "--repetition-penalty", "--max-tokens"] {
+            assert!(!cmd.contains(bad), "vllm 不应含 {bad}；cmd: {cmd}");
+        }
     }
 
     #[test]
-    fn build_command_vllm_docker_sampling_flags() {
+    fn build_command_vllm_docker_no_sampling() {
         let mut cfg = test_cfg_fw(
             "vllm",
             serde_json::json!({ "tp": 1, "maxNumSeqs": 32, "temperature": 0.5 }),
@@ -958,11 +932,12 @@ mod tests {
         assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
         assert!(cmd.contains("--tensor-parallel-size 1"), "cmd: {cmd}");
         assert!(cmd.contains("--max-num-seqs 32"), "cmd: {cmd}");
-        assert!(cmd.contains("--temperature 0.5"), "cmd: {cmd}");
+        assert!(!cmd.contains("--temperature"), "cmd: {cmd}");
     }
 
     #[test]
-    fn build_command_sglang_sampling_flags() {
+    fn build_command_sglang_flags_no_sampling() {
+        // sglang serve 无采样启动参数；maxNumSeqs 映射 --max-running-requests（非 --max-num-reqs）
         let cfg = test_cfg_fw(
             "sglang",
             serde_json::json!({
@@ -991,23 +966,21 @@ mod tests {
             "--mem-fraction-static 0.8",
             "--context-length 16384",
             "--host 0.0.0.0",
-            "--max-num-reqs 128",
+            "--max-running-requests 128",
             "--chunked-prefill-size 8192",
             "--dtype float16",
             "--quantization awq",
             "--trust-remote-code",
-            "--temperature 0.7",
-            "--top-p 0.95",
-            "--top-k 40",
-            "--repetition-penalty 1.05",
-            "--max-tokens 2048",
         ] {
             assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+        for bad in ["--temperature", "--top-p", "--top-k", "--repetition-penalty", "--max-tokens", "--max-num-reqs"] {
+            assert!(!cmd.contains(bad), "sglang 不应含 {bad}；cmd: {cmd}");
         }
     }
 
     #[test]
-    fn build_command_sglang_docker_sampling_flags() {
+    fn build_command_sglang_docker_no_sampling() {
         let mut cfg = test_cfg_fw(
             "sglang",
             serde_json::json!({ "tp": 2, "maxNumSeqs": 64, "topP": 0.9 }),
@@ -1016,8 +989,8 @@ mod tests {
         let cmd = build_command(&cfg).unwrap();
         assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
         assert!(cmd.contains("--tp 2"), "cmd: {cmd}");
-        assert!(cmd.contains("--max-num-reqs 64"), "cmd: {cmd}");
-        assert!(cmd.contains("--top-p 0.9"), "cmd: {cmd}");
+        assert!(cmd.contains("--max-running-requests 64"), "cmd: {cmd}");
+        assert!(!cmd.contains("--top-p"), "cmd: {cmd}");
     }
 
     fn test_profile() -> crate::profile::ServerProfile {

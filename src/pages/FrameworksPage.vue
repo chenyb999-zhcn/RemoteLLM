@@ -74,14 +74,10 @@ const vllmParams: ParamDef[] = [
   { key: "servedModelName", label: "served-model-name", type: "text", placeholder: "留空=目录名" },
   { key: "maxNumSeqs", label: "max-num-seqs", type: "number", placeholder: "留空=默认" },
   { key: "maxNumBatchedTokens", label: "max-num-batched-tokens", type: "number", placeholder: "留空=默认" },
-  { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "fp8-e4m3", "gptq", "awq", "bitsandbytes"], placeholder: "留空=默认" },
+  { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "gptq", "awq", "bitsandbytes"], placeholder: "留空=默认" },
   { key: "trustRemoteCode", label: "trust-remote-code", type: "switch", default: false },
   { key: "seed", label: "随机种子 seed", type: "number", placeholder: "留空=默认" },
-  { key: "temperature", label: "temperature", type: "number", default: 0.2, step: 0.05 },
-  { key: "topP", label: "top-p", type: "number", default: 0.95, step: 0.01 },
-  { key: "topK", label: "top-k", type: "number", default: 40 },
-  { key: "repetitionPenalty", label: "repetition-penalty", type: "number", default: 1.0, step: 0.01 },
-  { key: "maxTokens", label: "max-tokens", type: "number", placeholder: "留空=默认" },
+  // 采样参数（temperature/top-p 等）是 OpenAI API 每请求参数，vllm serve 无对应启动参数
   { key: "extraArgs", label: "附加参数", type: "text", placeholder: "--limit-concurrency 32" },
 ];
 
@@ -98,8 +94,10 @@ const FW_META: Record<string, FwMeta> = {
     desc: "vLLM fork（含 sm70/V100 支持）",
     defaultPort: 8000,
     dockerImage: "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5-preview",
+    // 1Cat-vLLM 预编译 wheel 只装 `vllm` 入口（无 1cat-vllm 命令），
+    // 且跑在 3.12 venv 里，裸命令名由启动脚本回退到 venv 二进制
     params: vllmParams.map((p) =>
-      p.key === "bin" ? { ...p, default: "1cat-vllm" } : p,
+      p.key === "bin" ? { ...p, default: "vllm" } : p,
     ),
   },
   "sglang": {
@@ -112,16 +110,12 @@ const FW_META: Record<string, FwMeta> = {
       { key: "memFractionStatic", label: "mem-fraction-static", type: "number", default: 0.85, step: 0.05 },
       { key: "contextLength", label: "context-length", type: "number", placeholder: "留空=默认" },
       { key: "host", label: "host", type: "text", default: "0.0.0.0" },
-      { key: "maxNumSeqs", label: "max-num-reqs", type: "number", placeholder: "留空=默认" },
+      { key: "maxNumSeqs", label: "max-running-requests", type: "number", placeholder: "留空=默认" },
       { key: "chunkedPrefillSize", label: "chunked-prefill-size", type: "number", placeholder: "留空=默认" },
       { key: "dtype", label: "数据类型", type: "select", options: ["auto", "bfloat16", "float16", "half"], default: "auto" },
       { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "mxfp8", "awq", "gptq", "bitsandbytes", "gguf"], placeholder: "留空=默认" },
       { key: "trustRemoteCode", label: "trust-remote-code", type: "switch", default: false },
-      { key: "temperature", label: "temperature", type: "number", default: 0.2, step: 0.05 },
-      { key: "topP", label: "top-p", type: "number", default: 0.95, step: 0.01 },
-      { key: "topK", label: "top-k", type: "number", default: 40 },
-      { key: "repetitionPenalty", label: "repetition-penalty", type: "number", default: 1.0, step: 0.01 },
-      { key: "maxTokens", label: "max-tokens", type: "number", placeholder: "留空=默认" },
+      // 采样参数（temperature/top-p 等）是 OpenAI API 每请求参数，sglang serve 无对应启动参数
       { key: "extraArgs", label: "附加参数", type: "text" },
     ],
   },
