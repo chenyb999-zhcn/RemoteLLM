@@ -545,17 +545,31 @@ pub fn preview_command(cfg: InstanceConfig) -> Result<String, AppError> {
     build_command(&cfg)
 }
 
+/// 端口占用探测片段（幂等、无外部依赖）：目标端口已被监听则输出 PORT_BUSY 并退出。
+/// 优先 ss（iproute2，绝大多数发行版自带），回退 bash /dev/tcp 连接探测。
+fn port_busy_check(port: u16) -> String {
+    format!(
+        "if command -v ss >/dev/null 2>&1; then \
+         ss -lnt 2>/dev/null | awk '{{print $4}}' | grep -Eq \":{port}$\" && {{ echo PORT_BUSY {port}; exit 5; }}; \
+         else (exec 3<>dev/tcp/127.0.0.1/{port}) 2>/dev/null && {{ echo PORT_BUSY {port}; exit 5; }}; \
+         fi; "
+    )
+}
+
 fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -> String {
     let run = profile.run_dir();
     let logs = profile.logs_dir();
     let s = slug(&cfg.name);
     let pidfile = format!("{run}/{s}.pid");
     let log = format!("{logs}/{s}.log");
+    let portcheck = port_busy_check(cfg.port);
 
     if cfg.mode == "docker" {
         let cmd = build_command(cfg).unwrap_or_default();
         return format!(
-            "docker ps -a --format '{{{{.Names}}}}' | grep -qx {s} && docker rm -f {s} >/dev/null 2>&1\n{cmd}\necho \"DOCKER_STARTED\"",
+            "{portcheck}\n\
+             docker ps -a --format '{{{{.Names}}}}' | grep -qx {s} && docker rm -f {s} >/dev/null 2>&1\n\
+             {cmd}\necho \"DOCKER_STARTED\"",
         );
     }
 
@@ -581,6 +595,7 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
     format!(
         "mkdir -p {run} {logs}\n\
          if [ -f {pidfile} ] && kill -0 \"$(cat {pidfile})\" 2>/dev/null; then echo ALREADY_RUNNING; exit 3; fi\n\
+         {portcheck}\
          {prelude}\
          nohup {cmd} > {log} 2>&1 &\n\
          echo $! > {pidfile}\n\
@@ -639,6 +654,17 @@ pub async fn instance_start(
     let script = start_script(&inst, &profile);
     let out = run_on(&state, &profile.id, &script).await?;
     let out = out.trim().to_string();
+    // 同名实例已在运行：友好提示（非错误，进程本就健康）
+    if out.contains("ALREADY_RUNNING") {
+        return Err(AppError::Other(format!("实例「{}」已在运行", inst.name)));
+    }
+    // 端口被占用（可能是其它实例或手动进程）：拦截并提示
+    if let Some(rest) = out.split("PORT_BUSY ").nth(1) {
+        let port = rest.split_whitespace().next().unwrap_or("");
+        return Err(AppError::Other(format!(
+            "端口 {port} 已被占用（可能是其它实例或手动启动的进程），请先释放该端口或改用其它端口"
+        )));
+    }
     if out.contains("START_FAILED") || (out.contains("error") && !out.contains("DOCKER_STARTED"))
     {
         Err(AppError::Other(out))
@@ -995,5 +1021,41 @@ mod tests {
         let s2 = start_script(&cfg2, &test_profile());
         assert!(!s2.contains("llama_bin="), "script: {s2}");
         assert!(s2.contains("nohup /opt/my/llama-server -m"), "script: {s2}");
+    }
+
+    #[test]
+    fn start_script_port_busy_check_native() {
+        // native 模式：启动前探测端口占用，被占则 PORT_BUSY 退出
+        let cfg = test_cfg(serde_json::json!({}));
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("PORT_BUSY 8080"), "script: {s}");
+        assert!(s.contains("ss -lnt"), "script: {s}");
+        // 端口探测在 nohup 启动之前
+        assert!(
+            s.find("PORT_BUSY").unwrap() < s.find("nohup").unwrap(),
+            "端口探测应在启动之前: {s}"
+        );
+    }
+
+    #[test]
+    fn start_script_port_busy_check_docker() {
+        // docker 模式：同样先探测端口
+        let mut cfg = test_cfg(serde_json::json!({}));
+        cfg.mode = "docker".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("PORT_BUSY 8080"), "script: {s}");
+        assert!(
+            s.find("PORT_BUSY").unwrap() < s.find("docker run").unwrap(),
+            "端口探测应在 docker run 之前: {s}"
+        );
+    }
+
+    #[test]
+    fn port_busy_check_uses_custom_port() {
+        let mut cfg = test_cfg(serde_json::json!({}));
+        cfg.port = 9999;
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("PORT_BUSY 9999"), "script: {s}");
+        assert!(s.contains("dev/tcp/127.0.0.1/9999"), "script: {s}");
     }
 }
