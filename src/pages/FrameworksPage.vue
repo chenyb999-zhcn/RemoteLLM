@@ -115,7 +115,7 @@ const FW_META: Record<string, FwMeta> = {
       { key: "maxNumSeqs", label: "max-num-reqs", type: "number", placeholder: "留空=默认" },
       { key: "chunkedPrefillSize", label: "chunked-prefill-size", type: "number", placeholder: "留空=默认" },
       { key: "dtype", label: "数据类型", type: "select", options: ["auto", "bfloat16", "float16", "half"], default: "auto" },
-      { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "fp8_e4m3", "awq", "gptq", "bitsandbytes"], placeholder: "留空=默认" },
+      { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "mxfp8", "awq", "gptq", "bitsandbytes", "gguf"], placeholder: "留空=默认" },
       { key: "trustRemoteCode", label: "trust-remote-code", type: "switch", default: false },
       { key: "temperature", label: "temperature", type: "number", default: 0.2, step: 0.05 },
       { key: "topP", label: "top-p", type: "number", default: 0.95, step: 0.01 },
