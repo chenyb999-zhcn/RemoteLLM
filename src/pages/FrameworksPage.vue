@@ -47,6 +47,8 @@ interface ParamDef {
   label: string;
   type: "text" | "number" | "switch" | "select";
   options?: string[];
+  /** 动态下拉选项来源（如本地 GGUF 模型列表） */
+  dynamicOptions?: "localGguf";
   default?: string | number | boolean;
   placeholder?: string;
   step?: number;
@@ -155,8 +157,21 @@ const FW_META: Record<string, FwMeta> = {
       { key: "topK", label: "top-k", type: "number", default: 40 },
       { key: "topP", label: "top-p", type: "number", default: 0.95, step: 0.01 },
       { key: "minP", label: "min-p", type: "number", default: 0.01, step: 0.01 },
-      { key: "mtp", label: "MTP 投机解码", type: "switch", default: false },
-      { key: "specDraftNMax", label: "MTP 步数", type: "number", default: 4 },
+      {
+        key: "specType",
+        label: "投机解码",
+        type: "select",
+        options: ["none", "draft-mtp", "draft-dflash", "draft-dspark"],
+        default: "none",
+      },
+      {
+        key: "specDraftModel",
+        label: "Draft 模型",
+        type: "select",
+        dynamicOptions: "localGguf",
+        placeholder: "选 DFlash/DSpark sidecar GGUF",
+      },
+      { key: "specDraftNMax", label: "投机步数", type: "number", default: 4 },
       { key: "extraArgs", label: "附加参数", type: "text" },
     ],
   },
@@ -235,6 +250,24 @@ function onFrameworkChange() {
   form.params = defaultParams(form.framework);
 }
 
+// ---------- 本地 GGUF 模型列表（投机解码 draft 模型下拉，懒加载） ----------
+const localGgufs = ref<{ label: string; value: string }[]>([]);
+let ggufLoadedFor: string | null = null;
+
+async function ensureLocalGgufs() {
+  const pid = current.value?.id;
+  if (!pid || ggufLoadedFor === pid) return;
+  try {
+    const models = await api.listLocalModels(pid);
+    localGgufs.value = models
+      .filter((m) => m.kind === "gguf" || m.kind === "gguf-split")
+      .map((m) => ({ label: m.name, value: m.path }));
+    ggufLoadedFor = pid;
+  } catch {
+    // 列表加载失败不阻塞表单，draft 模型下拉留空
+  }
+}
+
 function openAdd() {
   form.id = null;
   form.name = "";
@@ -243,6 +276,7 @@ function openAdd() {
   form.modelPath = current.value ? `${current.value.baseDir}/models/` : "";
   onFrameworkChange();
   showModal.value = true;
+  ensureLocalGgufs();
 }
 
 function openEdit(inst: InstanceConfig) {
@@ -254,7 +288,12 @@ function openEdit(inst: InstanceConfig) {
   form.port = inst.port;
   form.dockerImage = inst.dockerImage ?? meta.value.dockerImage;
   form.params = { ...defaultParams(inst.framework), ...(inst.params ?? {}) };
+  // 向后兼容：旧实例用 mtp 布尔开关，映射到 specType
+  if (form.params.mtp === true && !form.params.specType) {
+    form.params.specType = "draft-mtp";
+  }
   showModal.value = true;
+  ensureLocalGgufs();
 }
 
 function buildPreviewConfig(): InstanceConfig {
@@ -768,14 +807,22 @@ async function onDockerSuccess() {
   }
 }
 
-const visibleParams = computed(() =>
-  meta.value.params.filter((p) => {
+const visibleParams = computed(() => {
+  const specType = form.params.specType as string | undefined;
+  return meta.value.params.filter((p) => {
     if (p.nativeOnly && form.mode === "docker") return false;
     if (p.dockerOnly && form.mode === "native") return false;
-    if (p.key === "specDraftNMax" && !form.params.mtp) return false;
+    // 投机解码：draft 模型仅 dflash/dspark 需要；步数仅启用时显示
+    if (p.key === "specDraftModel" && !["draft-dflash", "draft-dspark"].includes(specType ?? "")) return false;
+    if (p.key === "specDraftNMax" && (!specType || specType === "none")) return false;
     return true;
-  }),
-);
+  });
+});
+
+function paramOptions(p: ParamDef): { label: string; value: string }[] {
+  if (p.dynamicOptions === "localGguf") return localGgufs.value;
+  return (p.options ?? []).map((o) => ({ label: o, value: o }));
+}
 
 function builtinImageOf(fw: string): string {
   if (fw === "1cat-vllm") {
@@ -993,7 +1040,9 @@ watch(
             <n-select
               v-else
               v-model:value="form.params[p.key]"
-              :options="(p.options ?? []).map((o) => ({ label: o, value: o }))"
+              :options="paramOptions(p)"
+              :placeholder="p.placeholder"
+              clearable
             />
           </n-form-item>
         </template>

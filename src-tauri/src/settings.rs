@@ -44,6 +44,81 @@ pub struct AppSettings {
     /// 代理地址，如 http://192.168.1.10:7890
     #[serde(default)]
     pub proxy_url: String,
+    /// pip 镜像源 id（tuna/aliyun/ustc/huawei/tencent/pypi），默认 tuna
+    #[serde(default = "default_pip_index")]
+    pub pip_index: String,
+    /// deb(apt) 镜像源 id（tuna/aliyun/ustc/huawei/tencent/official），默认 tuna
+    #[serde(default = "default_deb_mirror")]
+    pub deb_mirror: String,
+}
+
+fn default_pip_index() -> String {
+    "tuna".into()
+}
+
+fn default_deb_mirror() -> String {
+    "tuna".into()
+}
+
+/// pip 镜像 id → --index-url 参数（空/未知回退清华）
+pub fn pip_index_arg(id: &str) -> String {
+    let url = match id.trim() {
+        "aliyun" => "https://mirrors.aliyun.com/pypi/simple/",
+        "ustc" => "https://mirrors.ustc.edu.cn/pypi/simple/",
+        "huawei" => "https://mirrors.huaweicloud.com/repository/pypi/simple/",
+        "tencent" => "https://mirrors.cloud.tencent.com/pypi/simple/",
+        "pypi" => "https://pypi.org/simple/",
+        // tuna 或未知 → 清华
+        _ => "https://pypi.tuna.tsinghua.edu.cn/simple/",
+    };
+    format!("--index-url {url}")
+}
+
+/// deb(apt) 镜像 id → 主源 base URL（空/official/未知回退官方 archive.ubuntu.com）
+pub fn deb_mirror_base(id: &str) -> String {
+    match id.trim() {
+        "tuna" => "https://mirrors.tuna.tsinghua.edu.cn/ubuntu".into(),
+        "aliyun" => "https://mirrors.aliyun.com/ubuntu".into(),
+        "ustc" => "https://mirrors.ustc.edu.cn/ubuntu".into(),
+        "huawei" => "https://mirrors.huaweicloud.com/ubuntu".into(),
+        "tencent" => "https://mirrors.cloud.tencent.com/ubuntu".into(),
+        // official 或未知 → 官方
+        _ => "http://archive.ubuntu.com/ubuntu".into(),
+    }
+}
+
+/// 生成切换 apt 源的独立 shell 片段（幂等：已指向目标镜像则跳过），自带提权
+/// （root / 免密 sudo / 密码 sudo 三分支），放在 apt-get 命令之前执行。
+/// official/空/未知 → 返回空串（不改源）。pw 为登录密码（密码 sudo 分支用），可空。
+pub fn deb_mirror_prefix(id: &str, pw: Option<&str>) -> String {
+    let base = deb_mirror_base(id);
+    if base.starts_with("http://archive.ubuntu.com") {
+        return String::new();
+    }
+    let host = base
+        .split("://")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("");
+    let sed = format!(
+        "sed -i 's#http://archive.ubuntu.com/ubuntu#{base}#g; s#http://security.ubuntu.com/ubuntu#{base}/security#g' /etc/apt/sources.list"
+    );
+    // 提权三分支：root 直接 / 免密 sudo / 密码 sudo；都失败则告警不阻塞（apt 仍可用官方源兜底）
+    let pw_branch = match pw {
+        Some(p) if !p.is_empty() => {
+            let p = p.replace('\'', "'\\''");
+            format!("elif [ -n \"$(command -v sudo)\" ]; then printf '%s\\n' '{p}' | sudo -S -p '' {sed} || echo '[deb] 切换镜像源失败（sudo 密码不符），沿用当前源';")
+        }
+        _ => String::new(),
+    };
+    format!(
+        "if ! grep -q '{host}' /etc/apt/sources.list 2>/dev/null; then \
+         if [ \"$(id -u)\" = \"0\" ]; then {sed} || echo '[deb] 切换镜像源失败，沿用当前源'; \
+         elif sudo -n true 2>/dev/null; then sudo {sed} || echo '[deb] 切换镜像源失败，沿用当前源'; \
+         {pw_branch} \
+         fi; \
+         fi; "
+    )
 }
 
 fn default_dark() -> bool {
@@ -63,6 +138,8 @@ impl Default for AppSettings {
             dark_theme: true,
             proxy_enabled: false,
             proxy_url: String::new(),
+            pip_index: default_pip_index(),
+            deb_mirror: default_deb_mirror(),
         }
     }
 }
@@ -169,5 +246,56 @@ mod tests {
         s.proxy_enabled = true;
         s.proxy_url = "http://a'b:1".into();
         assert!(proxy_env_prefix(&s).contains(r#"'http://a'\''b:1'"#));
+    }
+
+    #[test]
+    fn pip_index_arg_resolves_known_and_fallback() {
+        assert!(pip_index_arg("tuna").contains("pypi.tuna.tsinghua.edu.cn"));
+        assert!(pip_index_arg("aliyun").contains("mirrors.aliyun.com/pypi"));
+        assert!(pip_index_arg("ustc").contains("mirrors.ustc.edu.cn/pypi"));
+        assert!(pip_index_arg("huawei").contains("mirrors.huaweicloud.com"));
+        assert!(pip_index_arg("tencent").contains("mirrors.cloud.tencent.com"));
+        assert!(pip_index_arg("pypi").contains("pypi.org/simple"));
+        // 空/未知回退清华
+        assert!(pip_index_arg("").contains("pypi.tuna.tsinghua.edu.cn"));
+        assert!(pip_index_arg("bogus").contains("pypi.tuna.tsinghua.edu.cn"));
+    }
+
+    #[test]
+    fn deb_mirror_base_resolves_known_and_official() {
+        assert!(deb_mirror_base("tuna").contains("mirrors.tuna.tsinghua.edu.cn/ubuntu"));
+        assert!(deb_mirror_base("aliyun").contains("mirrors.aliyun.com/ubuntu"));
+        assert!(deb_mirror_base("ustc").contains("mirrors.ustc.edu.cn/ubuntu"));
+        assert!(deb_mirror_base("huawei").contains("mirrors.huaweicloud.com/ubuntu"));
+        assert!(deb_mirror_base("tencent").contains("mirrors.cloud.tencent.com/ubuntu"));
+        // official/空/未知 → 官方 archive
+        assert!(deb_mirror_base("official").contains("archive.ubuntu.com"));
+        assert!(deb_mirror_base("").contains("archive.ubuntu.com"));
+        assert!(deb_mirror_base("bogus").contains("archive.ubuntu.com"));
+    }
+
+    #[test]
+    fn deb_mirror_prefix_official_is_empty() {
+        assert_eq!(deb_mirror_prefix("official", None), "");
+        assert_eq!(deb_mirror_prefix("", None), "");
+        assert_eq!(deb_mirror_prefix("bogus", None), "");
+    }
+
+    #[test]
+    fn deb_mirror_prefix_tuna_rewrites_sources() {
+        let s = deb_mirror_prefix("tuna", None);
+        assert!(s.contains("mirrors.tuna.tsinghua.edu.cn/ubuntu"));
+        assert!(s.contains("sed -i"));
+        assert!(s.contains("archive.ubuntu.com"));
+        // 幂等守卫
+        assert!(s.contains("grep -q 'mirrors.tuna.tsinghua.edu.cn'"));
+    }
+
+    #[test]
+    fn deb_mirror_prefix_password_branch() {
+        let s = deb_mirror_prefix("aliyun", Some("p@ss'word"));
+        assert!(s.contains("sudo -S -p ''"));
+        // 单引号转义
+        assert!(s.contains(r#"'p@ss'\''word'"#));
     }
 }

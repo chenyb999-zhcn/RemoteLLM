@@ -134,6 +134,30 @@ fn push_llama_common(p: &serde_json::Value, c: &mut Vec<String>) {
     }
 }
 
+/// llama-cpp 投机解码参数（原生与 Docker 共用）。
+/// specType: none | draft-mtp | draft-dflash | draft-dspark；
+/// 向后兼容：旧实例用 mtp 布尔开关（true → draft-mtp）。
+/// dflash/dspark 需要 sidecar draft 模型（--spec-draft-model），mtp 不需要。
+fn push_llama_spec(p: &serde_json::Value, c: &mut Vec<String>) {
+    let spec = pstr_opt(p, "specType")
+        .or_else(|| pbool(p, "mtp").then(|| "draft-mtp".to_string()))
+        .filter(|s| s != "none");
+    let Some(spec) = spec else {
+        return;
+    };
+    c.push(format!("--spec-type {spec}"));
+    if spec.starts_with("draft-d") {
+        if let Some(v) = pstr_opt(p, "specDraftModel") {
+            c.push(format!("--spec-draft-model {}", shq(&v)));
+        }
+    }
+    c.push(format!(
+        "--spec-draft-n-max {}",
+        pnum(p, "specDraftNMax", 4)
+    ));
+    c.push("--spec-draft-p-min 1".into());
+}
+
 /// vLLM 通用参数（原生与 Docker 共用）
 fn push_vllm_common(p: &serde_json::Value, c: &mut Vec<String>) {
     if let Some(v) = pnum_opt(p, "maxModelLen") {
@@ -284,14 +308,7 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 c.push(format!("--host {}", v));
             }
             push_llama_common(p, &mut c);
-            if pbool(p, "mtp") {
-                c.push("--spec-type draft-mtp".into());
-                c.push(format!(
-                    "--spec-draft-n-max {}",
-                    pnum(p, "specDraftNMax", 4)
-                ));
-                c.push("--spec-draft-p-min 1".into());
-            }
+            push_llama_spec(p, &mut c);
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 c.push(norm_args(&v));
             }
@@ -349,14 +366,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push("--host 0.0.0.0".into());
             run.push("--metrics".into());
             push_llama_common(p, &mut run);
-            if pbool(p, "mtp") {
-                run.push("--spec-type draft-mtp".into());
-                run.push(format!(
-                    "--spec-draft-n-max {}",
-                    pnum(p, "specDraftNMax", 4)
-                ));
-                run.push("--spec-draft-p-min 1".into());
-            }
+            push_llama_spec(p, &mut run);
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 run.push(norm_args(&v));
             }
@@ -791,6 +801,54 @@ mod tests {
         assert!(cmd.contains("--spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 1"), "cmd: {cmd}");
         // 多余空白压缩为单空格
         assert!(cmd.contains("--foo bar"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_llama_dflash_flags() {
+        // DFlash：specType 下拉 + sidecar draft 模型（--spec-draft-model）
+        let cfg = test_cfg(serde_json::json!({
+            "specType": "draft-dflash",
+            "specDraftModel": "/mnt/dflash-sidecar.gguf",
+            "specDraftNMax": 6
+        }));
+        let cmd = build_command(&cfg).unwrap();
+        assert!(
+            cmd.contains("--spec-type draft-dflash --spec-draft-model '/mnt/dflash-sidecar.gguf' --spec-draft-n-max 6 --spec-draft-p-min 1"),
+            "cmd: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_command_llama_dspark_docker() {
+        // DSpark（docker 模式）：同样走 sidecar 机制
+        let mut cfg = test_cfg(serde_json::json!({
+            "specType": "draft-dspark",
+            "specDraftModel": "/mnt/dspark.gguf"
+        }));
+        cfg.mode = "docker".into();
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        assert!(
+            cmd.contains("--spec-type draft-dspark --spec-draft-model '/mnt/dspark.gguf' --spec-draft-n-max 4 --spec-draft-p-min 1"),
+            "cmd: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_command_llama_spec_none_and_mtp_ignores_draft_model() {
+        // specType=none：不加任何投机 flag
+        let cfg = test_cfg(serde_json::json!({ "specType": "none" }));
+        let cmd = build_command(&cfg).unwrap();
+        assert!(!cmd.contains("--spec-type"), "cmd: {cmd}");
+
+        // MTP 选了 draft 模型路径也应忽略（mtp 不需要 sidecar）
+        let cfg2 = test_cfg(serde_json::json!({
+            "specType": "draft-mtp",
+            "specDraftModel": "/mnt/should-ignore.gguf"
+        }));
+        let cmd2 = build_command(&cfg2).unwrap();
+        assert!(!cmd2.contains("--spec-draft-model"), "cmd: {cmd2}");
+        assert!(cmd2.contains("--spec-type draft-mtp"), "cmd: {cmd2}");
     }
 
     fn test_cfg_fw(framework: &str, params: serde_json::Value) -> InstanceConfig {

@@ -13,6 +13,8 @@ const DEFAULTS: AppSettings = {
   darkTheme: true,
   proxyEnabled: false,
   proxyUrl: "",
+  pipIndex: "tuna",
+  debMirror: "tuna",
 };
 
 export const useSettingsStore = defineStore("settings", {

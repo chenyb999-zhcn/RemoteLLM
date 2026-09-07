@@ -9,6 +9,7 @@ import {
   NInputNumber,
   NRadioButton,
   NRadioGroup,
+  NSelect,
   NSpace,
   NSwitch,
   useMessage,
@@ -32,7 +33,26 @@ const form = reactive({
   darkTheme: true,
   proxyEnabled: false,
   proxyUrl: "",
+  pipIndex: "tuna",
+  debMirror: "tuna",
 });
+
+const pipIndexOptions = [
+  { label: "清华 TUNA", value: "tuna" },
+  { label: "阿里云", value: "aliyun" },
+  { label: "中科大 USTC", value: "ustc" },
+  { label: "华为云", value: "huawei" },
+  { label: "腾讯云", value: "tencent" },
+  { label: "官方 PyPI", value: "pypi" },
+];
+const debMirrorOptions = [
+  { label: "清华 TUNA", value: "tuna" },
+  { label: "阿里云", value: "aliyun" },
+  { label: "中科大 USTC", value: "ustc" },
+  { label: "华为云", value: "huawei" },
+  { label: "腾讯云", value: "tencent" },
+  { label: "官方源", value: "official" },
+];
 
 const saving = ref(false);
 
@@ -47,6 +67,8 @@ onMounted(async () => {
   form.darkTheme = value.value.darkTheme;
   form.proxyEnabled = value.value.proxyEnabled;
   form.proxyUrl = value.value.proxyUrl;
+  form.pipIndex = value.value.pipIndex || "tuna";
+  form.debMirror = value.value.debMirror || "tuna";
 });
 
 async function onSave() {
@@ -73,6 +95,8 @@ async function onSave() {
       darkTheme: form.darkTheme,
       proxyEnabled: form.proxyEnabled,
       proxyUrl: form.proxyUrl.trim(),
+      pipIndex: form.pipIndex,
+      debMirror: form.debMirror,
     });
     message.success("设置已保存");
   } catch (e: any) {
@@ -129,6 +153,19 @@ async function onSave() {
               :disabled="!form.proxyEnabled"
               placeholder="如 http://192.168.1.10:7890"
             />
+          </n-form-item>
+        </n-form>
+      </n-card>
+
+      <n-card title="软件源镜像（服务器侧生效）" size="small">
+        <n-form label-placement="left" label-width="110">
+          <n-form-item label="pip 源">
+            <n-select v-model:value="form.pipIndex" :options="pipIndexOptions" style="width: 220px" />
+            <span class="hint">引擎/依赖 pip 安装走该镜像（vLLM/sglang/1Cat 等）</span>
+          </n-form-item>
+          <n-form-item label="deb 源">
+            <n-select v-model:value="form.debMirror" :options="debMirrorOptions" style="width: 220px" />
+            <span class="hint">apt 装工具链/Docker 前自动切换 /etc/apt/sources.list（幂等）</span>
           </n-form-item>
         </n-form>
       </n-card>

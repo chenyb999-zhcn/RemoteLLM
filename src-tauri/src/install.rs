@@ -14,9 +14,6 @@ fn get_profile(app: &AppHandle, profile_id: &str) -> Result<ServerProfile, AppEr
         .ok_or_else(|| AppError::Other(format!("服务器档案不存在: {profile_id}")))
 }
 
-/// pip 默认使用清华镜像源（国内加速，避免 pypi.org 超时）
-const PIP_INDEX: &str = "--index-url https://pypi.tuna.tsinghua.edu.cn/simple";
-
 /// pip 自愈：缺 pip 时用官网 get-pip.py 安装（python urllib 下载，不依赖 curl；
 /// 系统目录不可写时自动回退 --user）。代理由脚本前缀的 http_proxy/https_proxy 环境变量生效。
 fn pip_bootstrap() -> &'static str {
@@ -30,12 +27,26 @@ fi
 }
 
 /// pip 安装：先引导 pip（缺失时 get-pip.py），再常规安装，遇 PEP 668（externally-managed）
-/// 自动重试 --break-system-packages；prefix 为代理导出前缀，空 = 未启用代理
-fn pip_install(pkg: &str, prefix: &str) -> String {
+/// 自动重试 --break-system-packages；prefix 为代理导出前缀，空 = 未启用代理；
+/// idx 为 --index-url 参数（由设置页镜像源决定）
+fn pip_install(pkg: &str, prefix: &str, idx: &str) -> String {
     format!(
         "{prefix}{boot}python3 -m pip install -U {idx} '{pkg}' 2>&1 \
           || python3 -m pip install -U {idx} '{pkg}' --break-system-packages 2>&1",
-        idx = PIP_INDEX,
+        boot = pip_bootstrap()
+    )
+}
+
+/// sglang 专用 pip 安装：sglang 依赖 outlines==0.1.11 → outlines_core==0.1.26，
+/// 该版本在清华源只有 sdist（无 cp314 wheel），需源码编译。其 PyO3 0.22.6 最高支持
+/// Python 3.13，在 Python 3.14 上必须设 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 才能
+/// 用稳定 ABI 编译通过；同时确保 cargo 在 PATH（rustup 装在 ~/.cargo/bin，未必在 PATH）。
+fn pip_install_sglang(prefix: &str, idx: &str) -> String {
+    format!(
+        "{prefix}export PATH=\"$HOME/.cargo/bin:$PATH\"\n\
+         export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1\n\
+         {boot}python3 -m pip install -U {idx} 'sglang' 2>&1 \
+           || python3 -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
         boot = pip_bootstrap()
     )
 }
@@ -76,6 +87,9 @@ pub fn build_install_script(
         .unwrap_or_else(default_onecat_repo);
     let onecat_repo_q = onecat_repo.replace('\'', "'\\''");
     let proxy = crate::settings::proxy_env_prefix(settings);
+    let idx = crate::settings::pip_index_arg(&settings.pip_index);
+    // apt 镜像源切换前缀（仅 apt 系脚本需要；自带提权，幂等）
+    let deb = crate::settings::deb_mirror_prefix(&settings.deb_mirror, sudo_pass);
     // llama.cpp 工具链缺失时的密码 sudo 分支：root / 免密 sudo 之外的第三条路
     let llama_else = match sudo_pass {
         Some(pw) => format!(
@@ -95,19 +109,18 @@ pub fn build_install_script(
     };
 
     Ok(match tool {
-        "modelscope" => pip_install("modelscope", &proxy),
-        "huggingface" => pip_install("huggingface_hub[cli]", &proxy),
-        "vllm" => pip_install("vllm", &proxy),
-        "sglang" => pip_install("sglang", &proxy),
+        "modelscope" => pip_install("modelscope", &proxy, &idx),
+        "huggingface" => pip_install("huggingface_hub[cli]", &proxy, &idx),
+        "vllm" => pip_install("vllm", &proxy, &idx),
+        "sglang" => pip_install_sglang(&proxy, &idx),
         "1cat-vllm" => format!(
             "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
               {boot}python3 -m pip install -e {idx} . 2>&1 || python3 -m pip install -e {idx} . --break-system-packages 2>&1",
-            idx = PIP_INDEX,
             boot = pip_bootstrap()
         ),
         "llama-cpp" => format!(
-            "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
+            "{proxy}{deb}mkdir -p {fw_dir}\ncd {fw_dir}\n\
               if ! {{ command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1; }}; then\n\
               echo \"[toolchain] 缺少 g++/make/cmake，尝试自动安装 build-essential + cmake ...\"\n\
               if [ \"$(id -u)\" = \"0\" ]; then\n\
@@ -131,7 +144,6 @@ pub fn build_install_script(
         "parser-libs" => format!(
             "{proxy}{boot}python3 -m pip install -U {idx} gguf safetensors 2>&1 \
               || python3 -m pip install -U {idx} gguf safetensors --break-system-packages 2>&1",
-            idx = PIP_INDEX,
             boot = pip_bootstrap()
         ),
         "docker-vllm" => {
@@ -283,5 +295,17 @@ mod tests {
         // llama-cpp 纯 cmake 编译，不需要 pip 引导
         let s = build_install_script(&profile(), &d, "llama-cpp", None).unwrap();
         assert!(!s.contains("get-pip.py"));
+    }
+
+    #[test]
+    fn sglang_install_sets_pyo3_abi3_and_cargo_path() {
+        // sglang 依赖的 outlines_core 0.1.26 在 Python 3.14 上需 ABI3 前向兼容 + cargo 在 PATH
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "sglang", None).unwrap();
+        assert!(s.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"), "sglang 未设 ABI3 前向兼容");
+        assert!(s.contains(".cargo/bin"), "sglang 未把 cargo 加入 PATH");
+        // 其它引擎不需要这两个环境变量
+        let v = build_install_script(&profile(), &d, "vllm", None).unwrap();
+        assert!(!v.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY"), "vllm 不应设 ABI3");
     }
 }

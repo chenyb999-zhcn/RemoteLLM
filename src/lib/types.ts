@@ -26,6 +26,10 @@ export interface AppSettings {
   darkTheme: boolean;
   proxyEnabled: boolean;
   proxyUrl: string;
+  /** pip 镜像源 id：tuna/aliyun/ustc/huawei/tencent/pypi */
+  pipIndex: string;
+  /** deb(apt) 镜像源 id：tuna/aliyun/ustc/huawei/tencent/official */
+  debMirror: string;
 }
 
 /** 单个磁盘分区 */

@@ -53,6 +53,8 @@ uname -sr
 echo "==GPU=="
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo GPU_NONE
 command -v nvcc >/dev/null 2>&1 && nvcc --version 2>/dev/null | grep -o 'release [0-9.]*' | head -1 || true
+# Rust 工具链（sglang 的 outlines_core 等 Rust 扩展编译需要；rustup 装在 ~/.cargo/bin，未必在 PATH）
+{{ command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]; }} && {{ cargo --version 2>/dev/null || "$HOME/.cargo/bin/cargo" --version 2>/dev/null; }} | grep -oE 'cargo [0-9.]+' | head -1 || true
 echo "==DOCKER=="
 docker --version 2>/dev/null | head -1
 systemctl is-active docker 2>/dev/null
@@ -117,6 +119,8 @@ pub struct InitSignals {
     /// (GPU 型号, 驱动版本)
     pub gpus: Vec<(String, String)>,
     pub nvcc: Option<String>,
+    /// Rust 工具链版本（cargo），sglang 等含 Rust 扩展的引擎编译需要
+    pub rust: Option<String>,
     pub docker_version: Option<String>,
     pub daemon_active: bool,
     pub docker_usable: bool,
@@ -165,6 +169,10 @@ pub fn parse_signals(raw: &str) -> InitSignals {
         }
         if l.starts_with("release ") {
             s.nvcc = Some(l.trim_start_matches("release ").to_string());
+            continue;
+        }
+        if let Some(v) = l.strip_prefix("cargo ") {
+            s.rust = Some(v.to_string());
             continue;
         }
         let (name, driver) = l.split_once(',').unwrap_or((l, ""));
@@ -392,6 +400,29 @@ pub fn build_items(
             "warn",
             Some("未安装；仅原生模式需要（vLLM/sglang pip 安装、llama.cpp 编译），docker 模式不需要".into()),
         )),
+    }
+    // Rust 工具链：sglang 的 outlines_core 等 Rust 扩展需编译（无预编译 wheel 时）
+    match &s.rust {
+        Some(ver) => v.push(item(
+            "gpu.rust",
+            "gpu",
+            "Rust 工具链",
+            "ok",
+            Some(format!("cargo {ver}（sglang 等含 Rust 扩展的引擎编译需要）")),
+        )),
+        None => v.push(InitItem {
+            manual: Some(
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
+                    .into(),
+            ),
+            ..item(
+                "gpu.rust",
+                "gpu",
+                "Rust 工具链",
+                "warn",
+                Some("未安装；sglang 的 outlines_core 等 Rust 扩展需编译（无预编译 wheel 时），vLLM/llama.cpp 不需要".into()),
+            )
+        }),
     }
 
     // ---------- Docker 与 GPU 运行时 ----------
@@ -691,15 +722,22 @@ fn validate_pkgs(pkgs: &[String]) -> Result<(), AppError> {
 }
 
 /// apt 安装脚本（逐行 sudo 包装，与 docker 安装同模式）
-pub fn build_apt_script(mode: SudoMode, password: Option<&str>, pkgs: &[String]) -> Result<String, AppError> {
+pub fn build_apt_script(
+    mode: SudoMode,
+    password: Option<&str>,
+    pkgs: &[String],
+    deb_mirror: &str,
+) -> Result<String, AppError> {
     validate_pkgs(pkgs)?;
     let list = pkgs.join(" ");
-    let lines = [
-        "set -e".to_string(),
-        "apt-get update -y".into(),
-        format!("DEBIAN_FRONTEND=noninteractive apt-get install -y {list}"),
-        "echo APT_INSTALL_DONE".into(),
-    ];
+    let deb = crate::settings::deb_mirror_prefix(deb_mirror, password);
+    let mut lines: Vec<String> = vec!["set -e".to_string()];
+    if !deb.is_empty() {
+        lines.push(deb);
+    }
+    lines.push("apt-get update -y".into());
+    lines.push(format!("DEBIAN_FRONTEND=noninteractive apt-get install -y {list}"));
+    lines.push("echo APT_INSTALL_DONE".into());
     Ok(lines
         .into_iter()
         .map(|l| {
@@ -715,10 +753,15 @@ pub fn build_apt_script(mode: SudoMode, password: Option<&str>, pkgs: &[String])
 
 /// apt 安装确认弹框预览（密码用 *** 占位）
 #[tauri::command]
-pub fn apt_install_preview(sudo_mode: String, pkgs: Vec<String>) -> Result<String, AppError> {
+pub fn apt_install_preview(
+    app: AppHandle,
+    sudo_mode: String,
+    pkgs: Vec<String>,
+) -> Result<String, AppError> {
     let mode = parse_mode(&sudo_mode)?;
     let password = (mode == SudoMode::SudoPass).then_some("***");
-    build_apt_script(mode, password, &pkgs)
+    let settings = crate::settings::load_settings(&app)?;
+    build_apt_script(mode, password, &pkgs, &settings.deb_mirror)
 }
 
 /// 执行 apt 安装（后台流式任务）
@@ -735,7 +778,8 @@ pub async fn apt_install_start(
     if mode == SudoMode::SudoPass && password.as_deref().map(str::trim).unwrap_or("").is_empty() {
         return Err(AppError::Other("该服务器 sudo 需要密码，请先输入 sudo 密码".into()));
     }
-    let script = build_apt_script(mode, password.as_deref(), &pkgs)?;
+    let settings = crate::settings::load_settings(&app)?;
+    let script = build_apt_script(mode, password.as_deref(), &pkgs, &settings.deb_mirror)?;
     if !state.conns.lock().await.contains_key(&profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
@@ -771,6 +815,7 @@ Linux 6.14.0 x86_64
 ==GPU==
 Tesla V100-PCIE-32GB, 580.65.06
 Tesla V100-PCIE-32GB, 580.65.06
+cargo 1.88.0
 ==DOCKER==
 Docker version 29.7.2, build abc
 active
@@ -812,6 +857,26 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
         assert!(s.gguf && s.safetensors);
         assert_eq!(s.images.len(), 2);
         assert!(s.fw.iter().all(|(_, ok, _)| !ok));
+        assert_eq!(s.rust.as_deref(), Some("1.88.0"));
+    }
+
+    #[test]
+    fn build_items_rust_toolchain() {
+        let s = parse_signals(RAW_Z420);
+        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let get = |id: &str| items.iter().find(|i| i.id == id).unwrap();
+        // 有 cargo → ok
+        assert_eq!(get("gpu.rust").state, "ok");
+        assert!(get("gpu.rust").detail.as_deref().unwrap().contains("1.88.0"));
+
+        // 无 cargo → warn + 手动 rustup 命令
+        let raw_norust = RAW_Z420.replace("cargo 1.88.0\n", "");
+        let s2 = parse_signals(&raw_norust);
+        assert_eq!(s2.rust, None);
+        let items2 = build_items(&s2, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let r2 = items2.iter().find(|i| i.id == "gpu.rust").unwrap();
+        assert_eq!(r2.state, "warn");
+        assert!(r2.manual.as_deref().unwrap().contains("rustup.rs"));
     }
 
     #[test]
@@ -894,13 +959,23 @@ NONE
 
     #[test]
     fn apt_whitelist_enforced() {
-        assert!(build_apt_script(SudoMode::Root, None, &["curl".into()]).is_ok());
-        assert!(build_apt_script(SudoMode::Root, None, &["curl".into(), "cmake".into()]).is_ok());
-        assert!(build_apt_script(SudoMode::Root, None, &["nginx".into()]).is_err());
-        assert!(build_apt_script(SudoMode::Root, None, &[]).is_err());
-        let s = build_apt_script(SudoMode::SudoPass, Some("pw"), &["curl".into()]).unwrap();
+        assert!(build_apt_script(SudoMode::Root, None, &["curl".into()], "official").is_ok());
+        assert!(build_apt_script(SudoMode::Root, None, &["curl".into(), "cmake".into()], "official").is_ok());
+        assert!(build_apt_script(SudoMode::Root, None, &["nginx".into()], "official").is_err());
+        assert!(build_apt_script(SudoMode::Root, None, &[], "official").is_err());
+        let s = build_apt_script(SudoMode::SudoPass, Some("pw"), &["curl".into()], "official").unwrap();
         assert!(s.contains("sudo -S -p '' DEBIAN_FRONTEND=noninteractive apt-get install -y curl"));
         assert!(s.contains("sudo -S -p '' apt-get update -y"));
         assert!(s.ends_with("echo APT_INSTALL_DONE"));
+    }
+
+    #[test]
+    fn apt_script_deb_mirror_prefix() {
+        let s = build_apt_script(SudoMode::Root, None, &["curl".into()], "aliyun").unwrap();
+        assert!(s.contains("mirrors.aliyun.com/ubuntu"));
+        assert!(s.contains("sed -i"));
+        // official → 无切换片段
+        let s2 = build_apt_script(SudoMode::Root, None, &["curl".into()], "official").unwrap();
+        assert!(!s2.contains("sed -i 's#http://archive.ubuntu.com"));
     }
 }

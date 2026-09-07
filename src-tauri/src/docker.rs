@@ -222,36 +222,43 @@ pub(crate) fn wrap_line(line: &str, mode: SudoMode, password: Option<&str>) -> S
 /// 2) 管道/重定向（`curl | gpg -o /usr/share/...`、`> /etc/apt/...`）被包装后
 ///    只有第一段拿到 sudo，其余以普通用户运行 → 权限拒绝被 || true 静默吞掉。
 /// 需要 root 的管道/重定向放到临时脚本里整体 `sudo bash` 执行。
-pub fn build_install_script(mode: SudoMode, password: Option<&str>) -> String {
+pub fn build_install_script(mode: SudoMode, password: Option<&str>, deb_mirror: &str) -> String {
+    // apt 镜像源切换前缀（自带提权，幂等；official/空 → 空串）
+    let deb = crate::settings::deb_mirror_prefix(deb_mirror, password);
     // (文本, 是否参与 sudo 包装)
-    let steps: &[(&str, bool)] = &[
-        ("set -e", false),
+    let mut steps: Vec<(String, bool)> = vec![
+        ("set -e".to_string(), false),
         // guard：绝对路径检测（usr-merge 后 apt-get 恒在 /usr/bin），且不包装
-        ("{ [ -x /usr/bin/apt-get ] || [ -x /usr/sbin/apt-get ]; } || { echo '未找到 apt-get，无法一键安装 Docker（当前仅支持 Debian/Ubuntu）'; exit 97; }", false),
-        ("apt-get update -y", true),
-        ("DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io", true),
-        ("systemctl enable docker", true),
-        ("systemctl restart docker", true),
-        ("usermod -aG docker \"$(whoami)\" || true", true),
-        ("cat > \"$HOME/.rl_nvidia_repo.sh\" <<'RL_EOF'", false),
-        ("curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true", false),
-        ("curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list || true", false),
-        ("RL_EOF", false),
-        ("bash \"$HOME/.rl_nvidia_repo.sh\"", true),
-        ("rm -f \"$HOME/.rl_nvidia_repo.sh\"", false),
-        ("apt-get update -y || true", true),
-        ("DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit || true", true),
-        ("nvidia-ctk runtime configure --runtime=docker || true", true),
-        ("systemctl restart docker || true", true),
-        ("echo DOCKER_INSTALL_DONE", true),
+        ("{ [ -x /usr/bin/apt-get ] || [ -x /usr/sbin/apt-get ]; } || { echo '未找到 apt-get，无法一键安装 Docker（当前仅支持 Debian/Ubuntu）'; exit 97; }".to_string(), false),
     ];
+    if !deb.is_empty() {
+        steps.push((deb, false));
+    }
+    steps.extend([
+        ("apt-get update -y".to_string(), true),
+        ("DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io".to_string(), true),
+        ("systemctl enable docker".to_string(), true),
+        ("systemctl restart docker".to_string(), true),
+        ("usermod -aG docker \"$(whoami)\" || true".to_string(), true),
+        ("cat > \"$HOME/.rl_nvidia_repo.sh\" <<'RL_EOF'".to_string(), false),
+        ("curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true".to_string(), false),
+        ("curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list || true".to_string(), false),
+        ("RL_EOF".to_string(), false),
+        ("bash \"$HOME/.rl_nvidia_repo.sh\"".to_string(), true),
+        ("rm -f \"$HOME/.rl_nvidia_repo.sh\"".to_string(), false),
+        ("apt-get update -y || true".to_string(), true),
+        ("DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit || true".to_string(), true),
+        ("nvidia-ctk runtime configure --runtime=docker || true".to_string(), true),
+        ("systemctl restart docker || true".to_string(), true),
+        ("echo DOCKER_INSTALL_DONE".to_string(), true),
+    ]);
     steps
         .iter()
         .map(|(l, wrap)| {
             if *wrap {
                 wrap_line(l, mode, password)
             } else {
-                l.to_string()
+                l.clone()
             }
         })
         .collect::<Vec<_>>()
@@ -297,10 +304,11 @@ pub(crate) async fn probe_sudo_mode(state: &State<'_, crate::AppState>, profile_
 
 /// 安装确认弹框预览（密码用 *** 占位）
 #[tauri::command]
-pub fn docker_install_preview(sudo_mode: String) -> Result<String, AppError> {
+pub fn docker_install_preview(app: AppHandle, sudo_mode: String) -> Result<String, AppError> {
     let mode = parse_mode(&sudo_mode)?;
     let password = (mode == SudoMode::SudoPass).then_some("***");
-    Ok(build_install_script(mode, password))
+    let settings = crate::settings::load_settings(&app)?;
+    Ok(build_install_script(mode, password, &settings.deb_mirror))
 }
 
 #[tauri::command]
@@ -315,7 +323,8 @@ pub async fn docker_install_start(
     {
         return Err(AppError::Other("该服务器 sudo 需要密码，请先输入 sudo 密码".into()));
     }
-    let script = build_install_script(mode, password.as_deref());
+    let settings = crate::settings::load_settings(&app)?;
+    let script = build_install_script(mode, password.as_deref(), &settings.deb_mirror);
     if !state.conns.lock().await.contains_key(&profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
@@ -541,7 +550,7 @@ mod tests {
 
     #[test]
     fn install_script_root_lines() {
-        let s = build_install_script(SudoMode::Root, None);
+        let s = build_install_script(SudoMode::Root, None, "official");
         assert!(s.starts_with("set -e"));
         assert!(s.contains("apt-get install -y docker.io"));
         assert!(s.contains("nvidia-ctk runtime configure --runtime=docker || true"));
@@ -550,8 +559,19 @@ mod tests {
     }
 
     #[test]
+    fn install_script_deb_mirror_prefix() {
+        // 选清华源 → 脚本含切换 apt 源的 sed 片段（在 apt-get update 之前）
+        let s = build_install_script(SudoMode::Root, None, "tuna");
+        assert!(s.contains("mirrors.tuna.tsinghua.edu.cn/ubuntu"));
+        assert!(s.contains("sed -i"));
+        // official → 无切换片段
+        let s2 = build_install_script(SudoMode::Root, None, "official");
+        assert!(!s2.contains("sed -i 's#http://archive.ubuntu.com"));
+    }
+
+    #[test]
     fn install_script_sudopass_every_cmd_wrapped() {
-        let s = build_install_script(SudoMode::SudoPass, Some("p"));
+        let s = build_install_script(SudoMode::SudoPass, Some("p"), "official");
         let lines: Vec<&str> = s.lines().collect();
         for l in lines.iter().skip(1) {
             if l.starts_with("echo DOCKER_INSTALL_DONE") {
@@ -581,7 +601,7 @@ mod tests {
     fn install_script_no_sudo_builtin_command() {
         // Bug 回归：任何模式都不得出现 `sudo ... command -v`（command 是内建命令，sudo 会失败）
         for mode in [SudoMode::Root, SudoMode::Sudo, SudoMode::SudoPass] {
-            let s = build_install_script(mode, Some("p"));
+            let s = build_install_script(mode, Some("p"), "official");
             assert!(
                 !s.contains("sudo") || !s.contains("command -v"),
                 "guard 被 sudo 包装: {s}"
@@ -595,7 +615,7 @@ mod tests {
     fn install_script_nvidia_repo_via_sudo_bash() {
         // Bug 回归：nvidia 仓库管道/重定向必须在 root 下执行 —— 临时脚本整体 sudo bash
         for mode in [SudoMode::Root, SudoMode::Sudo, SudoMode::SudoPass] {
-            let s = build_install_script(mode, Some("p"));
+            let s = build_install_script(mode, Some("p"), "official");
             assert!(s.contains("cat > \"$HOME/.rl_nvidia_repo.sh\" <<'RL_EOF'"), "{mode:?}");
             assert!(s.contains("curl -fsSL https://nvidia.github.io"));
             assert!(s.contains("RL_EOF"));

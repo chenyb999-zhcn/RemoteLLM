@@ -1,0 +1,18 @@
+# RemoteLLM 构建加速配置
+#
+# 为什么本机构建慢：tauri build 是 release 优化构建，要编译 ~400 个依赖
+# （tauri / reqwest / russh / tokio 等），其中 russh、reqwest 的密码学栈
+# （ring、rustls）和 tauri 本身最重。首次/依赖变更后最慢；增量重编只编
+# remotellm 自身（约 1.5 分钟）。
+#
+# 并行度：cargo 默认已按 CPU 核心并行编译（本机 32 核会自动用满），
+# 无需手动加 -j。若 CI/受限环境想显式限制，取消下面注释。
+#
+# sccache 编译缓存（提速最明显）：装了 sccache 后取消下面 rustc-wrapper 注释即可。
+#   安装：winget install mozilla.sccache   或   scoop install sccache
+#   注意：未安装 sccache 时该行会让 cargo 报错（program not found），故默认注释。
+#   首次构建填充缓存略慢，之后重复构建/改单文件显著变快。
+
+[build]
+# jobs = 16
+# rustc-wrapper = "sccache"
