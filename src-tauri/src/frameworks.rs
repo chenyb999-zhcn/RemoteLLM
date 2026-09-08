@@ -86,10 +86,6 @@ fn pnum(p: &serde_json::Value, key: &str, default: u64) -> u64 {
     p.get(key).and_then(|v| v.as_u64()).unwrap_or(default)
 }
 
-fn pnum_opt(p: &serde_json::Value, key: &str) -> Option<u64> {
-    p.get(key).and_then(|v| v.as_u64())
-}
-
 fn pnumf_opt(p: &serde_json::Value, key: &str) -> Option<f64> {
     p.get(key).and_then(|v| v.as_f64())
 }
@@ -98,40 +94,133 @@ fn pbool(p: &serde_json::Value, key: &str) -> bool {
     p.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
+/// 数字格式化：整数不带小数点（99 → "99"，0.85 → "0.85"）
+fn fnum(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// 简单字符串标志：参数非空才输出
+fn pflag_s(p: &serde_json::Value, c: &mut Vec<String>, key: &str, flag: &str) {
+    if let Some(v) = pstr_opt(p, key) {
+        c.push(format!("{flag} {v}"));
+    }
+}
+
+/// 需加引号的字符串标志（JSON/路径等含特殊字符的值）
+fn pflag_sq(p: &serde_json::Value, c: &mut Vec<String>, key: &str, flag: &str) {
+    if let Some(v) = pstr_opt(p, key) {
+        c.push(format!("{flag} {}", shq(&v)));
+    }
+}
+
+/// 简单数字标志：参数非空才输出
+fn pflag_n(p: &serde_json::Value, c: &mut Vec<String>, key: &str, flag: &str) {
+    if let Some(v) = pnumf_opt(p, key) {
+        c.push(format!("{flag} {}", fnum(v)));
+    }
+}
+
+/// 开关标志（默认关闭）：为 true 才输出
+fn pflag_on(p: &serde_json::Value, c: &mut Vec<String>, key: &str, flag: &str) {
+    if pbool(p, key) {
+        c.push(flag.to_string());
+    }
+}
+
+/// 开关标志（默认开启）：显式关闭（false）才输出对应的否定标志
+fn pflag_off(p: &serde_json::Value, c: &mut Vec<String>, key: &str, flag: &str) {
+    if p.get(key).and_then(|v| v.as_bool()) == Some(false) {
+        c.push(flag.to_string());
+    }
+}
+
 /// 由实例配置组装远端执行命令（前端预览与真正启动共用）
 pub fn norm_args(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// llama-cpp 通用采样/KV 参数（原生与 Docker 共用）
+/// llama-cpp 全部可选参数（原生与 Docker 共用），标志对照官方 tools/server/README.md
 fn push_llama_common(p: &serde_json::Value, c: &mut Vec<String>) {
-    if let Some(v) = pstr_opt(p, "cacheTypeK") {
-        c.push(format!("--cache-type-k {}", v));
+    // GPU 与显存
+    pflag_s(p, c, "flashAttn", "--flash-attn");
+    pflag_s(p, c, "cacheTypeK", "--cache-type-k");
+    pflag_s(p, c, "cacheTypeV", "--cache-type-v");
+    pflag_off(p, c, "kvOffload", "--no-kv-offload");
+    // 加载模式：新参数 loadMode；旧实例用 mlock 布尔（true → mlock）向后兼容
+    let load_mode = pstr_opt(p, "loadMode")
+        .filter(|s| s != "auto")
+        .or_else(|| pbool(p, "mlock").then(|| "mlock".to_string()));
+    if let Some(v) = load_mode {
+        c.push(format!("--load-mode {v}"));
     }
-    if let Some(v) = pstr_opt(p, "cacheTypeV") {
-        c.push(format!("--cache-type-v {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "flashAttn") {
-        c.push(format!("--flash-attn {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "reasoning") {
-        c.push(format!("--reasoning {}", v));
-    }
-    if pbool(p, "mlock") {
-        c.push("--mlock".into());
-    }
+    pflag_s(p, c, "splitMode", "--split-mode");
+    pflag_s(p, c, "tensorSplit", "-ts");
+    pflag_n(p, c, "mainGpu", "-mg");
+    pflag_s(p, c, "device", "-dev");
+    pflag_on(p, c, "cpuMoe", "-cmoe");
+    pflag_n(p, c, "nCpuMoe", "-ncmoe");
+    pflag_n(p, c, "nCpuFfn", "-ncffn");
+    pflag_s(p, c, "numa", "--numa");
+    pflag_on(p, c, "noHost", "--no-host");
+    pflag_on(p, c, "swaFull", "--swa-full");
+    // 采样
     if let Some(v) = pnumf_opt(p, "temperature") {
-        c.push(format!("--temperature {}", v));
+        c.push(format!("--temperature {}", fnum(v)));
     }
-    if let Some(v) = pnum_opt(p, "topK") {
-        c.push(format!("--top-k {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "topP") {
-        c.push(format!("--top-p {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "minP") {
-        c.push(format!("--min-p {}", v));
-    }
+    pflag_n(p, c, "topK", "--top-k");
+    pflag_n(p, c, "topP", "--top-p");
+    pflag_n(p, c, "minP", "--min-p");
+    pflag_n(p, c, "typical", "--typical-p");
+    pflag_n(p, c, "topNsigma", "--top-nsigma");
+    pflag_n(p, c, "xtcProbability", "--xtc-probability");
+    pflag_n(p, c, "xtcThreshold", "--xtc-threshold");
+    pflag_n(p, c, "repeatPenalty", "--repeat-penalty");
+    pflag_n(p, c, "repeatLastN", "--repeat-last-n");
+    pflag_n(p, c, "presencePenalty", "--presence-penalty");
+    pflag_n(p, c, "frequencyPenalty", "--frequency-penalty");
+    pflag_n(p, c, "dryMultiplier", "--dry-multiplier");
+    pflag_n(p, c, "dryBase", "--dry-base");
+    pflag_n(p, c, "dryAllowedLength", "--dry-allowed-length");
+    pflag_n(p, c, "dryPenaltyLastN", "--dry-penalty-last-n");
+    pflag_n(p, c, "dynatempRange", "--dynatemp-range");
+    pflag_n(p, c, "dynatempExp", "--dynatemp-exp");
+    pflag_s(p, c, "mirostat", "--mirostat");
+    pflag_n(p, c, "mirostatLr", "--mirostat-lr");
+    pflag_n(p, c, "mirostatEnt", "--mirostat-ent");
+    pflag_n(p, c, "seed", "-s");
+    pflag_sq(p, c, "samplers", "--samplers");
+    pflag_on(p, c, "ignoreEos", "--ignore-eos");
+    // 上下文与 RoPE
+    pflag_s(p, c, "ropeScaling", "--rope-scaling");
+    pflag_n(p, c, "ropeScale", "--rope-scale");
+    pflag_n(p, c, "ropeFreqBase", "--rope-freq-base");
+    pflag_n(p, c, "ropeFreqScale", "--rope-freq-scale");
+    pflag_n(p, c, "yarnOrigCtx", "--yarn-orig-ctx");
+    pflag_n(p, c, "yarnExtFactor", "--yarn-ext-factor");
+    pflag_n(p, c, "yarnAttnFactor", "--yarn-attn-factor");
+    pflag_n(p, c, "yarnBetaSlow", "--yarn-beta-slow");
+    pflag_n(p, c, "yarnBetaFast", "--yarn-beta-fast");
+    pflag_on(p, c, "contextShift", "--context-shift");
+    // 服务与高级
+    pflag_s(p, c, "reasoning", "--reasoning");
+    pflag_s(p, c, "reasoningFormat", "--reasoning-format");
+    pflag_s(p, c, "reasoningEffort", "--reasoning-effort");
+    pflag_off(p, c, "jinja", "--no-jinja");
+    pflag_s(p, c, "chatTemplate", "--chat-template");
+    pflag_s(p, c, "alias", "-a");
+    pflag_s(p, c, "apiKey", "--api-key");
+    pflag_n(p, c, "timeout", "-to");
+    pflag_n(p, c, "threadsHttp", "--threads-http");
+    pflag_off(p, c, "cachePrompt", "--no-cache-prompt");
+    pflag_n(p, c, "cacheReuse", "--cache-reuse");
+    pflag_n(p, c, "slotPromptSimilarity", "-sps");
+    pflag_off(p, c, "webui", "--no-ui");
+    pflag_sq(p, c, "lora", "--lora");
+    pflag_sq(p, c, "overrideKv", "--override-kv");
 }
 
 /// llama-cpp 投机解码参数（原生与 Docker 共用）。
@@ -153,75 +242,127 @@ fn push_llama_spec(p: &serde_json::Value, c: &mut Vec<String>) {
     }
     c.push(format!(
         "--spec-draft-n-max {}",
-        pnum(p, "specDraftNMax", 4)
+        fnum(pnumf_opt(p, "specDraftNMax").unwrap_or(4.0))
     ));
-    c.push("--spec-draft-p-min 1".into());
+    if let Some(v) = pnumf_opt(p, "specDraftNMin") {
+        c.push(format!("--spec-draft-n-min {}", fnum(v)));
+    }
+    c.push(format!(
+        "--spec-draft-p-min {}",
+        fnum(pnumf_opt(p, "specDraftPMin").unwrap_or(1.0))
+    ));
+    if let Some(v) = pnumf_opt(p, "specDraftPSplit") {
+        c.push(format!("--spec-draft-p-split {}", fnum(v)));
+    }
+    if let Some(v) = pnumf_opt(p, "specDraftNgl") {
+        c.push(format!("-ngld {}", fnum(v)));
+    }
+    if let Some(v) = pstr_opt(p, "specDraftDevice") {
+        c.push(format!("-devd {v}"));
+    }
 }
 
-/// vLLM 通用参数（原生与 Docker 共用）
+/// vLLM / 1Cat-vLLM 通用参数（原生与 Docker 共用），
+/// 对照 v1.5 实际版本 `vllm serve --help`（ModelConfig/ParallelConfig/CacheConfig/SchedulerConfig/Frontend 配置组）
+/// 注意：vllm serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
+/// 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
 fn push_vllm_common(p: &serde_json::Value, c: &mut Vec<String>) {
-    if let Some(v) = pnum_opt(p, "maxModelLen") {
-        c.push(format!("--max-model-len {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "gpuMemUtil") {
-        c.push(format!("--gpu-memory-utilization {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "dtype") {
-        c.push(format!("--dtype {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "servedModelName") {
-        c.push(format!("--served-model-name {}", v));
-    }
-    if pbool(p, "enforceEager") {
-        c.push("--enforce-eager".into());
-    }
-    if let Some(v) = pnumf_opt(p, "maxNumSeqs") {
-        c.push(format!("--max-num-seqs {}", v));
-    }
-    if let Some(v) = pnumf_opt(p, "maxNumBatchedTokens") {
-        c.push(format!("--max-num-batched-tokens {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "quantization") {
-        c.push(format!("--quantization {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "seed") {
-        c.push(format!("--seed {}", v));
-    }
-    // 注意：vllm serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
-    // 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
-    if pbool(p, "trustRemoteCode") {
-        c.push("--trust-remote-code".into());
-    }
+    // 基本
+    pflag_n(p, c, "maxModelLen", "--max-model-len");
+    pflag_s(p, c, "servedModelName", "--served-model-name");
+    pflag_s(p, c, "dtype", "--dtype");
+    pflag_n(p, c, "seed", "--seed");
+    pflag_s(p, c, "revision", "--revision");
+    pflag_s(p, c, "hfToken", "--hf-token");
+    pflag_on(p, c, "trustRemoteCode", "--trust-remote-code");
+    // 并行与显存
+    pflag_n(p, c, "pp", "--pipeline-parallel-size");
+    pflag_n(p, c, "dp", "--data-parallel-size");
+    pflag_n(p, c, "gpuMemUtil", "--gpu-memory-utilization");
+    pflag_s(p, c, "kvCacheDtype", "--kv-cache-dtype");
+    pflag_off(p, c, "enablePrefixCaching", "--no-enable-prefix-caching");
+    pflag_n(p, c, "blockSize", "--block-size");
+    // 调度与吞吐
+    pflag_n(p, c, "maxNumSeqs", "--max-num-seqs");
+    pflag_n(p, c, "maxNumBatchedTokens", "--max-num-batched-tokens");
+    pflag_off(p, c, "enableChunkedPrefill", "--no-enable-chunked-prefill");
+    pflag_n(p, c, "streamInterval", "--stream-interval");
+    pflag_on(p, c, "asyncScheduling", "--async-scheduling");
+    pflag_on(p, c, "enforceEager", "--enforce-eager");
+    // 量化与加载
+    pflag_s(p, c, "quantization", "--quantization");
+    pflag_s(p, c, "loadFormat", "--load-format");
+    pflag_sq(p, c, "hfOverrides", "--hf-overrides");
+    // 前端与 API
+    pflag_s(p, c, "host", "--host");
+    pflag_s(p, c, "apiKey", "--api-key");
+    pflag_s(p, c, "chatTemplate", "--chat-template");
+    pflag_sq(p, c, "chatTemplateKwargs", "--default-chat-template-kwargs");
+    pflag_s(p, c, "reasoningParser", "--reasoning-parser");
+    pflag_s(p, c, "toolCallParser", "--tool-call-parser");
+    pflag_on(p, c, "enableAutoToolChoice", "--enable-auto-tool-choice");
+    pflag_s(p, c, "allowedOrigins", "--allowed-origins");
+    pflag_s(p, c, "uvicornLogLevel", "--uvicorn-log-level");
+    pflag_on(p, c, "disableLogStats", "--disable-log-stats");
+    pflag_on(p, c, "enableLogRequests", "--enable-log-requests");
 }
 
-/// SGLang 通用参数（原生与 Docker 共用）
+/// 1Cat-vLLM 专属参数（SM70/V100 支持），对照其 README 与 1.5 实际版本 --help
+fn push_1cat_extra(p: &serde_json::Value, c: &mut Vec<String>) {
+    pflag_s(p, c, "attentionBackend", "--attention-backend");
+    pflag_s(p, c, "gdnPrefillBackend", "--gdn-prefill-backend");
+    pflag_sq(p, c, "speculativeConfig", "--speculative-config");
+    pflag_s(p, c, "performanceMode", "--performance-mode");
+}
+
+/// SGLang 全部可选参数（原生与 Docker 共用），对照 0.5.19 实际版本 --help
+/// 注意：sglang serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
+/// 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
 fn push_sglang_common(p: &serde_json::Value, c: &mut Vec<String>) {
-    if let Some(v) = pnumf_opt(p, "memFractionStatic") {
-        c.push(format!("--mem-fraction-static {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "contextLength") {
-        c.push(format!("--context-length {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "host") {
-        c.push(format!("--host {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "maxNumSeqs") {
-        c.push(format!("--max-running-requests {}", v));
-    }
-    if let Some(v) = pnum_opt(p, "chunkedPrefillSize") {
-        c.push(format!("--chunked-prefill-size {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "dtype") {
-        c.push(format!("--dtype {}", v));
-    }
-    if let Some(v) = pstr_opt(p, "quantization") {
-        c.push(format!("--quantization {}", v));
-    }
-    // 注意：sglang serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
-    // 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
-    if pbool(p, "trustRemoteCode") {
-        c.push("--trust-remote-code".into());
-    }
+    // 基本
+    pflag_s(p, c, "dtype", "--dtype");
+    pflag_n(p, c, "contextLength", "--context-length");
+    pflag_s(p, c, "quantization", "--quantization");
+    pflag_s(p, c, "loadFormat", "--load-format");
+    pflag_s(p, c, "kvCacheDtype", "--kv-cache-dtype");
+    pflag_s(p, c, "revision", "--revision");
+    pflag_on(p, c, "trustRemoteCode", "--trust-remote-code");
+    // 内存与调度
+    pflag_n(p, c, "memFractionStatic", "--mem-fraction-static");
+    pflag_n(p, c, "maxNumSeqs", "--max-running-requests");
+    pflag_n(p, c, "maxTotalTokens", "--max-total-tokens");
+    pflag_n(p, c, "chunkedPrefillSize", "--chunked-prefill-size");
+    pflag_n(p, c, "maxPrefillTokens", "--max-prefill-tokens");
+    pflag_s(p, c, "schedulePolicy", "--schedule-policy");
+    pflag_n(p, c, "scheduleConservativeness", "--schedule-conservativeness");
+    pflag_n(p, c, "pageSize", "--page-size");
+    pflag_on(p, c, "disableRadixCache", "--disable-radix-cache");
+    // 并行
+    pflag_n(p, c, "pp", "--pp");
+    pflag_n(p, c, "dp", "--dp");
+    pflag_on(p, c, "enableDpAttention", "--enable-dp-attention");
+    pflag_s(p, c, "device", "--device");
+    pflag_n(p, c, "baseGpuId", "--base-gpu-id");
+    pflag_n(p, c, "gpuIdStep", "--gpu-id-step");
+    pflag_n(p, c, "randomSeed", "--random-seed");
+    // 服务与 API
+    pflag_s(p, c, "host", "--host");
+    pflag_s(p, c, "servedModelName", "--served-model-name");
+    pflag_s(p, c, "apiKey", "--api-key");
+    pflag_s(p, c, "chatTemplate", "--chat-template");
+    pflag_sq(p, c, "chatTemplateKwargs", "--default-chat-template-kwargs");
+    pflag_on(p, c, "enableMetrics", "--enable-metrics");
+    pflag_s(p, c, "logLevel", "--log-level");
+    pflag_on(p, c, "logRequests", "--log-requests");
+    pflag_n(p, c, "streamInterval", "--stream-interval");
+    pflag_on(p, c, "skipServerWarmup", "--skip-server-warmup");
+    // 投机解码
+    pflag_s(p, c, "speculativeAlgorithm", "--speculative-algorithm");
+    pflag_s(p, c, "speculativeDraftModel", "--speculative-draft-model-path");
+    pflag_n(p, c, "speculativeNumDraftTokens", "--speculative-num-draft-tokens");
+    pflag_n(p, c, "speculativeNumSteps", "--speculative-num-steps");
+    pflag_n(p, c, "speculativeEagleTopk", "--speculative-eagle-topk");
+    pflag_s(p, c, "speculativeAttentionMode", "--speculative-attention-mode");
 }
 
 fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
@@ -247,14 +388,19 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
                 format!("--tensor-parallel-size {}", pnum(p, "tp", 1)),
             ];
             push_vllm_common(p, &mut c);
+            if cfg.framework == "1cat-vllm" {
+                push_1cat_extra(p, &mut c);
+            }
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 c.push(norm_args(&v));
             }
             Ok(c.join(" "))
         }
         "sglang" => {
+            // sglang 装在 3.12 venv 里（系统 python3 是 3.14，torch.compile 不支持 3.14，
+            // sglang import 即崩）。用 venv 的 python 跑，裸命令名由启动脚本回退解析。
             let mut c = vec![
-                "python3 -m sglang.launch_server".to_string(),
+                "sglang_py -m sglang.launch_server".to_string(),
                 format!("--model-path {}", m),
                 format!("--port {}", cfg.port),
                 format!("--tp {}", pnum(p, "tp", 1)),
@@ -279,6 +425,13 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
             if threads > 0 {
                 c.push(format!("--threads {}", threads));
             }
+            // 基本（可选）
+            pflag_n(p, &mut c, "nPredict", "-n");
+            pflag_n(p, &mut c, "threadsBatch", "-tb");
+            pflag_n(p, &mut c, "batchSize", "-b");
+            pflag_n(p, &mut c, "ubatchSize", "-ub");
+            pflag_n(p, &mut c, "parallel", "-np");
+            pflag_n(p, &mut c, "keep", "--keep");
             if let Some(v) = pstr_opt(p, "host") {
                 c.push(format!("--host {}", v));
             }
@@ -320,6 +473,9 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push(format!("--port {}", cfg.port));
             run.push(format!("--tensor-parallel-size {}", pnum(p, "tp", 1)));
             push_vllm_common(p, &mut run);
+            if cfg.framework == "1cat-vllm" {
+                push_1cat_extra(p, &mut run);
+            }
             if let Some(v) = pstr_opt(p, "extraArgs") {
                 run.push(norm_args(&v));
             }
@@ -338,8 +494,18 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             run.push(format!("-m {}", m));
             run.push(format!("-ngl {}", pnum(p, "ngl", 99)));
             run.push(format!("-c {}", pnum(p, "ctxSize", 4096)));
-            run.push("--host 0.0.0.0".into());
+            // 容器内需监听 0.0.0.0 才能被 -p 端口映射访问
+            run.push(match pstr_opt(p, "host") {
+                Some(v) => format!("--host {v}"),
+                None => "--host 0.0.0.0".to_string(),
+            });
             run.push("--metrics".into());
+            pflag_n(p, &mut run, "nPredict", "-n");
+            pflag_n(p, &mut run, "threadsBatch", "-tb");
+            pflag_n(p, &mut run, "batchSize", "-b");
+            pflag_n(p, &mut run, "ubatchSize", "-ub");
+            pflag_n(p, &mut run, "parallel", "-np");
+            pflag_n(p, &mut run, "keep", "--keep");
             push_llama_common(p, &mut run);
             push_llama_spec(p, &mut run);
             if let Some(v) = pstr_opt(p, "extraArgs") {
@@ -354,7 +520,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
 fn default_docker_image(fw: &str) -> String {
     match fw {
         "vllm" => "vllm/vllm-openai:latest".into(),
-        "1cat-vllm" => "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5-preview".into(),
+        "1cat-vllm" => "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5".into(),
         "sglang" => "lmsysorg/sglang:latest-cu129".into(),
         _ => "ghcr.io/ggml-org/llama.cpp:server-cuda".into(),
     }
@@ -461,7 +627,9 @@ fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 echo "==SGLANG=="
-_p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+# sglang 装在 3.12 venv 里（系统 python3 是 3.14，import 即崩），优先查 venv
+_p=$("$HOME/RemoteLLM/frameworks/sglang-venv/bin/python" -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+[ -z "$_p" ] && _p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
 [ -n "$_p" ] && echo "$_p"
 [ -z "$_p" ] && echo NONE
 echo "==LLAMA=="
@@ -589,6 +757,19 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
             );
             cmd = format!("\"$cat_bin\"{}", &cmd[bin.len()..]);
         }
+    }
+    // sglang 装在 3.12 venv 里（系统 python3 是 3.14，torch.compile 不支持 3.14，
+    // sglang import 即崩）。命令以 `sglang_py` 开头时回退到 venv 的 python。
+    if cfg.framework == "sglang" && cmd.starts_with("sglang_py ") {
+        let venv_py = format!(
+            "{}/frameworks/sglang-venv/bin/python",
+            profile.base_dir.trim_end_matches('/')
+        );
+        prelude = format!(
+            "sglang_py=$(command -v python3 2>/dev/null)\n\
+             [ -x {venv_py} ] && sglang_py={venv_py}\n"
+        );
+        cmd = format!("\"$sglang_py\"{}", &cmd["sglang_py".len()..]);
     }
     format!(
         "mkdir -p {run} {logs}\n\
@@ -959,7 +1140,7 @@ mod tests {
         );
         let cmd = build_command(&cfg).unwrap();
         assert!(
-            cmd.starts_with("python3 -m sglang.launch_server --model-path '/mnt/m.gguf' --port 8080 --tp 1"),
+            cmd.starts_with("sglang_py -m sglang.launch_server --model-path '/mnt/m.gguf' --port 8080 --tp 1"),
             "cmd: {cmd}"
         );
         for flag in [
@@ -991,6 +1172,211 @@ mod tests {
         assert!(cmd.contains("--tp 2"), "cmd: {cmd}");
         assert!(cmd.contains("--max-running-requests 64"), "cmd: {cmd}");
         assert!(!cmd.contains("--top-p"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_llama_optin_params() {
+        // 新参数 opt-in：填写才输出
+        let cfg = test_cfg(serde_json::json!({
+            "nPredict": 128,
+            "splitMode": "row",
+            "ropeScale": 2.0,
+            "lora": "/mnt/lora/adapter.gguf",
+            "kvOffload": false,
+            "loadMode": "mlock",
+            "jinja": false
+        }));
+        let cmd = build_command(&cfg).unwrap();
+        for flag in [
+            "-n 128",
+            "--split-mode row",
+            "--rope-scale 2",
+            "--lora '/mnt/lora/adapter.gguf'",
+            "--no-kv-offload",
+            "--load-mode mlock",
+            "--no-jinja",
+        ] {
+            assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+
+        // 未填写不输出
+        let cmd2 = build_command(&test_cfg(serde_json::json!({}))).unwrap();
+        for bad in [
+            "-n ",
+            "--split-mode",
+            "--rope-scale",
+            "--lora",
+            "--no-kv-offload",
+            "--load-mode",
+            "--no-jinja",
+            "--mirostat",
+            "--reasoning-format",
+        ] {
+            assert!(!cmd2.contains(bad), "不应含 {bad}；cmd: {cmd2}");
+        }
+    }
+
+    #[test]
+    fn build_command_llama_mlock_compat() {
+        // 旧实例 mlock=true（无 loadMode）→ --load-mode mlock
+        let cfg = test_cfg(serde_json::json!({ "mlock": true }));
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.contains("--load-mode mlock"), "cmd: {cmd}");
+        assert!(!cmd.contains("--mlock"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_vllm_new_params() {
+        let cfg = test_cfg_fw(
+            "vllm",
+            serde_json::json!({
+                "pp": 2,
+                "dp": 3,
+                "kvCacheDtype": "fp8_e5m2",
+                "enablePrefixCaching": false,
+                "host": "10.0.0.5",
+                "toolCallParser": "qwen3_coder",
+                "enableAutoToolChoice": true,
+                "streamInterval": 5
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        for flag in [
+            "--pipeline-parallel-size 2",
+            "--data-parallel-size 3",
+            "--kv-cache-dtype fp8_e5m2",
+            "--no-enable-prefix-caching",
+            "--host 10.0.0.5",
+            "--tool-call-parser qwen3_coder",
+            "--enable-auto-tool-choice",
+            "--stream-interval 5",
+        ] {
+            assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+
+        // 1Cat 专属参数不应出现在普通 vLLM
+        let cfg2 = test_cfg_fw(
+            "vllm",
+            serde_json::json!({
+                "attentionBackend": "FLASH_ATTN_V100",
+                "speculativeConfig": "{\"method\":\"dflash\"}"
+            }),
+        );
+        let cmd2 = build_command(&cfg2).unwrap();
+        assert!(!cmd2.contains("--attention-backend"), "cmd2: {cmd2}");
+        assert!(!cmd2.contains("--speculative-config"), "cmd2: {cmd2}");
+    }
+
+    #[test]
+    fn build_command_onecat_sm70_params() {
+        let cfg = test_cfg_fw(
+            "1cat-vllm",
+            serde_json::json!({
+                "attentionBackend": "FLASH_ATTN_V100",
+                "gdnPrefillBackend": "flashqla_sm70",
+                "speculativeConfig": "{\"method\":\"dflash\",\"model\":\"incoai/Qwen3.8-27B-DFlash2\"}",
+                "kvCacheDtype": "fp8_e5m2"
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.contains("--attention-backend FLASH_ATTN_V100"), "cmd: {cmd}");
+        assert!(cmd.contains("--gdn-prefill-backend flashqla_sm70"), "cmd: {cmd}");
+        assert!(
+            cmd.contains(
+                "--speculative-config '{\"method\":\"dflash\",\"model\":\"incoai/Qwen3.8-27B-DFlash2\"}'"
+            ),
+            "cmd: {cmd}"
+        );
+        assert!(cmd.contains("--kv-cache-dtype fp8_e5m2"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_onecat_full_defaults() {
+        // 1Cat 全套默认参数（Qwen3.8-27B-NVFP4 + DFlash2 示例，模型路径除外）
+        let cfg = test_cfg_fw(
+            "1cat-vllm",
+            serde_json::json!({
+                "servedModelName": "qwen3.8-27b-dflash2",
+                "trustRemoteCode": true,
+                "tp": 4,
+                "attentionBackend": "FLASH_ATTN_V100",
+                "kvCacheDtype": "fp8_e5m2",
+                "maxModelLen": 262144,
+                "gpuMemUtil": 0.8,
+                "enableAutoToolChoice": true,
+                "toolCallParser": "qwen3_coder",
+                "reasoningParser": "qwen3",
+                "chatTemplateKwargs": "{\"enable_thinking\":true}",
+                "speculativeConfig": "{\"method\":\"dflash\",\"model\":\"incoai/Qwen3.8-27B-DFlash2\",\"revision\":\"dedf8df68adfb1afeaf7b7480c0a0243108177b4\",\"kv_cache_dtype\":\"auto\"}",
+                "host": "0.0.0.0"
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        for flag in [
+            "vllm serve '/mnt/m.gguf'",
+            "--port 8080",
+            "--tensor-parallel-size 4",
+            "--served-model-name qwen3.8-27b-dflash2",
+            "--trust-remote-code",
+            "--attention-backend FLASH_ATTN_V100",
+            "--kv-cache-dtype fp8_e5m2",
+            "--max-model-len 262144",
+            "--gpu-memory-utilization 0.8",
+            "--enable-auto-tool-choice",
+            "--tool-call-parser qwen3_coder",
+            "--reasoning-parser qwen3",
+            "--default-chat-template-kwargs '{\"enable_thinking\":true}'",
+            "--host 0.0.0.0",
+        ] {
+            assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+        assert!(
+            cmd.contains(
+                "--speculative-config '{\"method\":\"dflash\",\"model\":\"incoai/Qwen3.8-27B-DFlash2\",\"revision\":\"dedf8df68adfb1afeaf7b7480c0a0243108177b4\",\"kv_cache_dtype\":\"auto\"}'"
+            ),
+            "cmd: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_command_sglang_new_params() {
+        let cfg = test_cfg_fw(
+            "sglang",
+            serde_json::json!({
+                "maxTotalTokens": 100000,
+                "schedulePolicy": "fcfs",
+                "disableRadixCache": true,
+                "enableMetrics": true,
+                "speculativeAlgorithm": "MTP",
+                "speculativeNumDraftTokens": 4,
+                "randomSeed": 42
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        for flag in [
+            "--max-total-tokens 100000",
+            "--schedule-policy fcfs",
+            "--disable-radix-cache",
+            "--enable-metrics",
+            "--speculative-algorithm MTP",
+            "--speculative-num-draft-tokens 4",
+            "--random-seed 42",
+        ] {
+            assert!(cmd.contains(flag), "缺少 {flag}；cmd: {cmd}");
+        }
+        // 未填写不输出
+        let cmd2 = build_command(&test_cfg_fw("sglang", serde_json::json!({}))).unwrap();
+        for bad in [
+            "--max-total-tokens",
+            "--schedule-policy",
+            "--disable-radix-cache",
+            "--enable-metrics",
+            "--speculative-algorithm",
+            "--random-seed",
+            "--kv-cache-dtype",
+        ] {
+            assert!(!cmd2.contains(bad), "不应含 {bad}；cmd: {cmd2}");
+        }
     }
 
     fn test_profile() -> crate::profile::ServerProfile {
@@ -1036,6 +1422,18 @@ mod tests {
         let s2 = start_script(&cfg2, &test_profile());
         assert!(!s2.contains("cat_bin="), "script: {s2}");
         assert!(s2.contains("nohup /opt/venv/bin/vllm serve"), "script: {s2}");
+    }
+
+    #[test]
+    fn start_script_resolves_sglang_py_to_venv() {
+        // sglang 装在 3.12 venv（系统 python3 是 3.14，import 即崩），
+        // 命令以 sglang_py 开头时回退到 venv 的 python
+        let mut cfg = test_cfg_fw("sglang", serde_json::json!({}));
+        cfg.mode = "native".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("sglang_py=$(command -v python3"), "script: {s}");
+        assert!(s.contains("~/RemoteLLM/frameworks/sglang-venv/bin/python"), "script: {s}");
+        assert!(s.contains("nohup \"$sglang_py\" -m sglang.launch_server"), "script: {s}");
     }
 
     #[test]

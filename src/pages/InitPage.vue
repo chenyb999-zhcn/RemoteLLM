@@ -33,6 +33,7 @@ const loading = ref(false);
 const GROUPS = [
   { key: "sys", label: "基础系统" },
   { key: "gpu", label: "GPU 驱动" },
+  { key: "cuda", label: "CUDA 库" },
   { key: "docker", label: "Docker 与 GPU 运行时" },
   { key: "tools", label: "模型工具" },
   { key: "engine", label: "推理引擎" },
@@ -53,6 +54,14 @@ function groupItems(key: string): InitItem[] {
   return result.value?.items.filter((i) => i.group === key) ?? [];
 }
 
+// docker-install 按钮文案：Docker 已装、仅缺 GPU 运行时 → 更精确的提示
+function fixLabel(it: InitItem): string {
+  if (it.fix === "docker-install" && it.id === "docker.gpu") {
+    return "安装 GPU 容器运行时";
+  }
+  return FIX_LABEL[it.fix ?? ""] ?? "修复";
+}
+
 async function refresh() {
   const pid = current.value?.id;
   if (!pid || loading.value) return;
@@ -60,7 +69,7 @@ async function refresh() {
   try {
     result.value = await api.serverInitCheck(pid);
   } catch (e: any) {
-    message.error(`初始化检查失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(`环境检查失败: ${e?.message ?? JSON.stringify(e)}`);
   } finally {
     loading.value = false;
   }
@@ -267,7 +276,7 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <n-space justify="space-between" align="center" style="margin-bottom: 16px">
-      <h2 style="margin: 0">初始化检查</h2>
+      <h2 style="margin: 0">环境检查</h2>
       <n-space size="small">
         <template v-if="result">
           <n-tag type="success" size="small">就绪 {{ result.okCount }}</n-tag>
@@ -303,7 +312,7 @@ onBeforeUnmount(() => {
               ghost
               @click="onFix(it)"
             >
-              {{ FIX_LABEL[it.fix] ?? "修复" }}
+              {{ fixLabel(it) }}
             </n-button>
             <n-button
               v-if="it.manual"

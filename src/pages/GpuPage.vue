@@ -22,42 +22,15 @@ import { useServerStore } from "../stores/server";
 import { useSettingsStore } from "../stores/settings";
 import { api, fmtBytes, onTaskStream } from "../lib/api";
 import type { GpuProcRow, GpuQueryResult } from "../lib/types";
-import LineChart from "../components/LineChart.vue";
-import type { Series } from "../components/LineChart.vue";
 
 const store = useServerStore();
 const { current } = storeToRefs(store);
 const settingsStore = useSettingsStore();
-const { value: settings } = storeToRefs(settingsStore);
 const message = useMessage();
 const dialog = useDialog();
 
 const result = ref<GpuQueryResult | null>(null);
 const loading = ref(false);
-
-// ---------- 本页迷你趋势轮询 ----------
-const snaps = ref<Awaited<ReturnType<typeof api.gpuPoll>>[]>([]);
-let timer: number | null = null;
-let polling = false;
-
-function pollMs() {
-  return Math.min(Math.max(settings.value.pollIntervalMs || 3000, 1000), 60000);
-}
-
-async function poll() {
-  const id = current.value?.id;
-  if (!id || polling) return;
-  polling = true;
-  try {
-    const s = await api.gpuPoll(id);
-    snaps.value.push(s);
-    if (snaps.value.length > 100) snaps.value.shift();
-  } catch {
-    /* 轮询失败不打扰 */
-  } finally {
-    polling = false;
-  }
-}
 
 async function refresh() {
   const pid = current.value?.id;
@@ -118,23 +91,6 @@ const mergedCards = computed<MergedCard[]>(() => {
 function memPct(st: MergedCard["stat"]): number {
   if (!st?.memTotalMb || st.memUsedMb == null) return 0;
   return Math.min(100, Math.round((st.memUsedMb / st.memTotalMb) * 100));
-}
-
-function cardSeries(gi: number): Series[] {
-  return [
-    {
-      label: "利用率 %",
-      data: snaps.value.map((s) => ({ x: s.ts, y: s.gpus[gi]?.util ?? null })),
-    },
-    {
-      label: "显存 %",
-      data: snaps.value.map((s) => {
-        const g = s.gpus[gi];
-        if (!g?.memTotalMb || g.memUsedMb == null) return { x: s.ts, y: null };
-        return { x: s.ts, y: Math.round((g.memUsedMb / g.memTotalMb) * 1000) / 10 };
-      }),
-    },
-  ];
 }
 
 // ---------- 进程结束（仅自己的进程） ----------
@@ -313,13 +269,9 @@ const setActionTitle = ref("调整 GPU 设置");
 onMounted(() => {
   void settingsStore.load();
   refresh();
-  timer = window.setInterval(() => poll(), pollMs());
-  poll();
 });
 
 onBeforeUnmount(() => {
-  if (timer != null) window.clearInterval(timer);
-  timer = null;
   cancelLog.value?.();
 });
 </script>
@@ -407,9 +359,6 @@ onBeforeUnmount(() => {
               <n-tag v-for="r in c.throttleReasons" :key="r" size="small" type="warning">
                 {{ r }}
               </n-tag>
-            </div>
-            <div class="mini-chart">
-              <line-chart :series="cardSeries(c.index)" :y-max="100" y-label="%" :height="100" />
             </div>
           </n-card>
         </n-grid-item>
@@ -579,9 +528,6 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-}
-.mini-chart {
-  margin-top: 8px;
 }
 .set-row {
   display: flex;

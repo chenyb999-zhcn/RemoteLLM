@@ -11,7 +11,7 @@ use crate::settings::AppSettings;
 #[serde(rename_all = "camelCase")]
 pub struct InitItem {
     pub id: String,
-    /// sys | gpu | docker | tools | engine
+    /// sys | gpu | cuda | docker | tools | engine
     pub group: &'static str,
     pub label: String,
     /// ok | warn | missing | info
@@ -34,8 +34,25 @@ pub struct InitCheckResult {
     pub missing_count: u32,
 }
 
-/// apt 自动安装白名单（初始化检查页只允许装这些）
+/// apt 自动安装白名单（环境检查页只允许装这些）
 pub const APT_WHITELIST: &[&str] = &["curl", "git", "build-essential", "cmake", "ca-certificates"];
+
+/// CUDA 库检查清单：key -> (中文标签, 作用说明, 缺失时状态)
+/// 缺失状态：核心推理库（cuBLAS/cuDNN/NCCL）缺为 warn，其余专用库缺为 info（docker 镜像均自带）
+const CUDA_LIBS: &[(&str, &str, &str, &str)] = &[
+    ("cublas", "cuBLAS", "GPU 矩阵运算（GEMM/GEMV）；NCCL 传数据、cuBLAS 算数据", "warn"),
+    ("cudnn", "cuDNN", "深度学习原语加速（Conv/Attention/Norm）；vLLM/PyTorch 推理训练必装", "warn"),
+    ("nccl", "NCCL", "多 GPU/多节点集合通信（AllReduce、Broadcast 等）", "warn"),
+    ("cufft", "cuFFT", "GPU 快速傅里叶变换（信号处理/频域计算专用）", "info"),
+    ("cusolver", "cuSOLVER", "稠密/稀疏线性求解器（LU/QR/Cholesky/SVD）；科学计算/优化", "info"),
+    ("cusparse", "cuSPARSE", "稀疏矩阵运算（SpMV/SpMM，CSR/CSC）；GNN/推荐/MoE 关键依赖", "info"),
+    ("curand", "cuRAND", "GPU 高质量随机数生成（训练采样/初始化）", "info"),
+    ("npp", "NPP", "图像/信号处理原语（滤波/形态学/统计）；CV 预处理管线", "info"),
+    ("nvjpeg", "nvJPEG", "GPU 硬件 JPEG 编解码（数据加载瓶颈优化）", "info"),
+    ("nvcomp", "nvCOMP", "GPU 通用压缩/解压（数据加载瓶颈优化）", "info"),
+    ("cutlass", "CUTLASS", "高性能 GEMM/Attention 模板库（源码级）；FlashAttention/vLLM 自定义 kernel 基础", "info"),
+    ("trtllm", "TensorRT-LLM", "LLM 推理优化引擎（量化/KV Cache/调度）；vLLM 的竞品/互补方案", "info"),
+];
 
 /// 一次 SSH 拿全部初始化信号（分节输出，section 解析与 docker.rs/envcheck.rs 相同约定）
 fn init_script(base_dir: &str) -> String {
@@ -88,7 +105,9 @@ fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 echo "==SGLANG=="
-_p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+# sglang 装在 3.12 venv 里（系统 python3 是 3.14，import 即崩），优先查 venv
+_p=$("$HOME/RemoteLLM/frameworks/sglang-venv/bin/python" -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+[ -z "$_p" ] && _p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
 [ -n "$_p" ] && echo "$_p"
 [ -z "$_p" ] && echo NONE
 echo "==LLAMA=="
@@ -98,6 +117,28 @@ _f=$(find "{fw_dir}" -maxdepth 4 -name llama-server -type f 2>/dev/null | head -
 [ -n "$_v" ] && echo "$_v"
 [ -n "$_f" ] && echo "$_f"
 [ -z "$_v" ] && [ -z "$_f" ] && echo NONE
+echo "==CUDALIBS=="
+# CUDA 库探测：dpkg 系统包（前缀匹配，覆盖 libcublas-12-8 / libcublas12 两种命名）+ pip 包
+# （nvidia-*-cu12 系列 / tensorrt-llm，系统 python3 + 引擎 venv）
+_dpkg=$(dpkg -l 2>/dev/null | awk '/^ii/ {{print $2" "$3}}')
+_pips=""
+for P in python3 "$HOME/RemoteLLM/frameworks/1cat-venv/bin/python" "$HOME/RemoteLLM/frameworks/sglang-venv/bin/python"; do
+  if [ "$P" = "python3" ]; then command -v python3 >/dev/null 2>&1 || continue; else [ -x "$P" ] || continue; fi
+  _pips="$_pips
+$("$P" -m pip list --format=freeze 2>/dev/null)"
+done
+for pair in "cublas:libcublas:nvidia-cublas" "cudnn:libcudnn:nvidia-cudnn" "nccl:libnccl:nvidia-nccl" "cufft:libcufft:nvidia-cufft" "cusolver:libcusolver:nvidia-cusolver" "cusparse:libcusparse:nvidia-cusparse" "curand:libcurand:nvidia-curand" "npp:libnpp:nvidia-npp" "nvjpeg:libnvjpeg:nvidia-nvjpeg" "nvcomp:libnvcomp:nvidia-nvcomp" "cutlass::nvidia-cutlass" "trtllm::tensorrt[-_]llm"; do
+  key="${{pair%%:*}}"; rest="${{pair#*:}}"; deb="${{rest%%:*}}"; pyp="${{rest##*:}}"
+  hit=""
+  if [ -n "$deb" ]; then
+    hit=$(printf '%s\n' "$_dpkg" | grep -E "^$deb" | head -1)
+    if [ -n "$hit" ]; then echo "$key DPKG $hit"; continue; fi
+  fi
+  if [ -n "$pyp" ]; then
+    hit=$(printf '%s\n' "$_pips" | grep -iE "^$pyp" | head -1)
+    if [ -n "$hit" ]; then echo "$key PIP $hit"; fi
+  fi
+done
 echo "==IMG=="
 docker images --format '{{{{.Repository}}}}:{{{{.Tag}}}}' 2>/dev/null
 exit 0
@@ -141,6 +182,8 @@ pub struct InitSignals {
     pub safetensors: bool,
     /// 4 引擎 native 检测结果（framework id -> installed/version）
     pub fw: Vec<(String, bool, Option<String>)>,
+    /// CUDA 库检测结果（lib key -> 详情：文件路径 或 "Python"）
+    pub cuda_libs: HashMap<String, String>,
     /// 本地镜像 repo:tag 列表
     pub images: Vec<String>,
 }
@@ -222,6 +265,31 @@ pub fn parse_signals(raw: &str) -> InitSignals {
         .into_iter()
         .map(|f| (f.framework, f.installed, f.version))
         .collect();
+
+    // CUDA 库：行形如 "<key> DPKG <包名> <版本>" 或 "<key> PIP <包名>==<版本>"
+    // 每个 key 脚本只输出一行（dpkg 命中优先于 pip），or_insert 兜底
+    for l in section(raw, "CUDALIBS")
+        .unwrap_or("")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    {
+        let mut parts = l.splitn(3, ' ');
+        let (key, tag, rest) = (
+            parts.next().unwrap_or(""),
+            parts.next().unwrap_or(""),
+            parts.next().unwrap_or("").trim(),
+        );
+        if key.is_empty() || rest.is_empty() {
+            continue;
+        }
+        let val = match tag {
+            "DPKG" => format!("dpkg {rest}"),
+            "PIP" => format!("pip {rest}"),
+            _ => continue,
+        };
+        s.cuda_libs.entry(key.to_string()).or_insert(val);
+    }
 
     s.images = section(raw, "IMG")
         .unwrap_or("")
@@ -428,6 +496,28 @@ pub fn build_items(
                 Some("未安装；sglang 的 outlines_core 等 Rust 扩展需编译（无预编译 wheel 时），vLLM/llama.cpp 不需要".into()),
             )
         }),
+    }
+
+    // ---------- CUDA 库 ----------
+    for (key, label, desc, missing_state) in CUDA_LIBS {
+        match s.cuda_libs.get(*key) {
+            Some(found) => v.push(item(
+                &format!("cuda.{key}"),
+                "cuda",
+                label,
+                "ok",
+                Some(format!("{desc}；{found}")),
+            )),
+            None => v.push(item(
+                &format!("cuda.{key}"),
+                "cuda",
+                label,
+                missing_state,
+                Some(format!(
+                    "{desc}；未检测到（docker 镜像自带；原生模式可 apt 装 nvidia-cuda-toolkit 系或 pip 装 nvidia-* 包）"
+                )),
+            )),
+        }
     }
 
     // ---------- Docker 与 GPU 运行时 ----------
@@ -682,7 +772,7 @@ fn summarize(items: Vec<InitItem>) -> InitCheckResult {
     }
 }
 
-/// 服务器初始化检查：一次 SSH 收集全部信号并生成检查项
+/// 服务器环境检查：一次 SSH 收集全部信号并生成检查项
 #[tauri::command]
 pub async fn server_init_check(
     app: AppHandle,
@@ -843,6 +933,11 @@ NONE
 NONE
 ==LLAMA==
 NONE
+==CUDALIBS==
+cublas DPKG libcublas12 12.8.4.1
+cudnn PIP nvidia-cudnn-cu12==9.10.2.21
+nccl DPKG libnccl2 2.26.5-1
+trtllm PIP tensorrt-llm==0.17.0
 ==IMG==
 hello-world:latest
 nvidia/cuda:12.8.1-devel-ubuntu22.04
@@ -863,6 +958,50 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
         assert_eq!(s.images.len(), 2);
         assert!(s.fw.iter().all(|(_, ok, _)| !ok));
         assert_eq!(s.rust.as_deref(), Some("1.88.0"));
+        // CUDA 库：dpkg 命中 / pip 命中；未出现者为缺失
+        assert_eq!(
+            s.cuda_libs.get("cublas").map(String::as_str),
+            Some("dpkg libcublas12 12.8.4.1")
+        );
+        assert_eq!(
+            s.cuda_libs.get("cudnn").map(String::as_str),
+            Some("pip nvidia-cudnn-cu12==9.10.2.21")
+        );
+        assert_eq!(s.cuda_libs.get("nccl").map(String::as_str), Some("dpkg libnccl2 2.26.5-1"));
+        assert_eq!(s.cuda_libs.get("trtllm").map(String::as_str), Some("pip tensorrt-llm==0.17.0"));
+        assert!(s.cuda_libs.get("cufft").is_none());
+        assert!(s.cuda_libs.get("nvcomp").is_none());
+    }
+
+    #[test]
+    fn build_items_cuda_libs() {
+        let s = parse_signals(RAW_Z420);
+        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let get = |id: &str| items.iter().find(|i| i.id == id).unwrap();
+        // dpkg 命中 → ok，detail 带包名+版本
+        assert_eq!(get("cuda.cublas").state, "ok");
+        assert!(get("cuda.cublas").detail.as_deref().unwrap().contains("dpkg libcublas12 12.8.4.1"));
+        assert_eq!(get("cuda.nccl").state, "ok");
+        // pip 命中 → ok，detail 标注 pip
+        assert_eq!(get("cuda.trtllm").state, "ok");
+        assert!(get("cuda.trtllm").detail.as_deref().unwrap().contains("pip tensorrt-llm==0.17.0"));
+        // 核心库缺失 → warn（只保留 nccl 命中，其余缺失）
+        let raw_nocuda = RAW_Z420.replace(
+            "cublas DPKG libcublas12 12.8.4.1\n\
+             cudnn PIP nvidia-cudnn-cu12==9.10.2.21\n\
+             nccl DPKG libnccl2 2.26.5-1\n\
+             trtllm PIP tensorrt-llm==0.17.0\n",
+            "nccl DPKG libnccl2 2.26.5-1\n",
+        );
+        let s2 = parse_signals(&raw_nocuda);
+        let items2 = build_items(&s2, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let g2 = |id: &str| items2.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(g2("cuda.cublas").state, "warn");
+        assert_eq!(g2("cuda.cudnn").state, "warn");
+        assert_eq!(g2("cuda.nccl").state, "ok");
+        // 专用库缺失 → info
+        assert_eq!(g2("cuda.cufft").state, "info");
+        assert_eq!(g2("cuda.cutlass").state, "info");
     }
 
     #[test]

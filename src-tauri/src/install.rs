@@ -41,16 +41,6 @@ fn pip_install(pkg: &str, prefix: &str, idx: &str) -> String {
 /// 该版本在清华源只有 sdist（无 cp314 wheel），需源码编译。其 PyO3 0.22.6 最高支持
 /// Python 3.13，在 Python 3.14 上必须设 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 才能
 /// 用稳定 ABI 编译通过；同时确保 cargo 在 PATH（rustup 装在 ~/.cargo/bin，未必在 PATH）。
-fn pip_install_sglang(prefix: &str, idx: &str) -> String {
-    format!(
-        "{prefix}export PATH=\"$HOME/.cargo/bin:$PATH\"\n\
-         export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1\n\
-         {boot}python3 -m pip install -U {idx} 'sglang' 2>&1 \
-           || python3 -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
-        boot = pip_bootstrap()
-    )
-}
-
 /// pip 卸载：只移除指定包本身，不触碰 torch/CUDA 等共享依赖（pip uninstall 默认行为），
 /// 因此不会影响其它引擎。遇 PEP 668 自动重试 --break-system-packages
 fn pip_uninstall(pkg: &str, prefix: &str) -> String {
@@ -63,7 +53,7 @@ fn pip_uninstall(pkg: &str, prefix: &str) -> String {
 }
 
 /// 密码登录的档案可提取登录密码，作为 llama.cpp 工具链自愈的 sudo 密码
-/// （若 sudo 密码与登录密码不同，安装会失败并提示走「初始化检查」页）
+/// （若 sudo 密码与登录密码不同，安装会失败并提示走「环境检查」页）
 fn sudo_password(profile: &ServerProfile) -> Option<&str> {
     match &profile.auth {
         crate::profile::AuthMethod::Password { password } if !password.is_empty() => Some(password),
@@ -93,7 +83,7 @@ pub fn build_install_script(
     // llama.cpp 工具链缺失时的密码 sudo 分支：root / 免密 sudo 之外的第三条路
     let llama_else = match sudo_pass {
         Some(pw) => format!(
-            "{{ {u} && {i}; }} || {{ echo \"ERROR: 工具链安装失败（sudo 密码与登录密码不同或网络问题）。请先在「初始化检查」页安装 build-essential + cmake 后重试\"; exit 1; }}",
+            "{{ {u} && {i}; }} || {{ echo \"ERROR: 工具链安装失败（sudo 密码与登录密码不同或网络问题）。请先在「环境检查」页安装 build-essential + cmake 后重试\"; exit 1; }}",
             u = crate::docker::wrap_line(
                 "apt-get update -y",
                 crate::docker::SudoMode::SudoPass,
@@ -105,14 +95,30 @@ pub fn build_install_script(
                 Some(pw)
             ),
         ),
-        None => "echo \"ERROR: 缺少 C++ 工具链（g++/make/cmake）。请先在「初始化检查」页安装 build-essential + cmake 后重试（或改用密码方式连接可自动安装）\"; exit 1".into(),
+        None => "echo \"ERROR: 缺少 C++ 工具链（g++/make/cmake）。请先在「环境检查」页安装 build-essential + cmake 后重试（或改用密码方式连接可自动安装）\"; exit 1".into(),
     };
 
     Ok(match tool {
         "modelscope" => pip_install("modelscope", &proxy, &idx),
         "huggingface" => pip_install("huggingface_hub[cli]", &proxy, &idx),
         "vllm" => pip_install("vllm", &proxy, &idx),
-        "sglang" => pip_install_sglang(&proxy, &idx),
+        "sglang" => format!(
+            "{proxy}mkdir -p {fw_dir}\n\
+              export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
+              export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1\n\
+              # sglang 需跑在 Python 3.12（系统 python3 可能是 3.14，torch.compile 不支持 3.14，\n\
+              # sglang import 即崩）。用 uv 确保 3.12 可用并建 venv。\n\
+              if ! command -v uv >/dev/null 2>&1; then\n\
+              echo \"[setup] 安装 uv（用于管理 Python 3.12）...\"\n\
+              curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
+              fi\n\
+              uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
+              if [ ! -x {fw_dir}/sglang-venv/bin/python ]; then\n\
+              uv venv --python 3.12 {fw_dir}/sglang-venv 2>&1 || {{ echo \"ERROR: 创建 sglang venv 失败\"; exit 1; }}\n\
+              fi\n\
+              {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' 2>&1 \
+              || {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
+        ),
         "1cat-vllm" => format!(
             "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
               _pyver=$(python3 -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0)\n\
@@ -137,7 +143,7 @@ pub fn build_install_script(
               else\n\
               {llama_else}\n\
               fi\n\
-              command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1 || {{ echo \"ERROR: 工具链仍不完整（g++/make/cmake），请在「初始化检查」页安装 build-essential + cmake\"; exit 1; }}\n\
+              command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1 || {{ echo \"ERROR: 工具链仍不完整（g++/make/cmake），请在「环境检查」页安装 build-essential + cmake\"; exit 1; }}\n\
               fi\n\
               if [ ! -d llama.cpp ]; then git clone --depth 1 https://github.com/ggml-org/llama.cpp; fi\n\
               cd llama.cpp\n\
@@ -241,11 +247,11 @@ mod tests {
         assert!(s.contains("sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake"));
         assert!(s.contains("printf '%s\\n' 'x' | sudo -S -p '' apt-get update -y"));
         assert!(s.contains("printf '%s\\n' 'x' | sudo -S -p '' DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake"));
-        // 密钥登录档案：给出「初始化检查」指引
+        // 密钥登录档案：给出「环境检查」指引
         let mut k = profile();
         k.auth = crate::profile::AuthMethod::Key { key_path: "~/.ssh/id".into(), passphrase: None };
         let s2 = build_install_script(&k, &d, "llama-cpp", None).unwrap();
-        assert!(s2.contains("请在「初始化检查」页安装 build-essential + cmake"));
+        assert!(s2.contains("请在「环境检查」页安装 build-essential + cmake"));
         assert!(!s2.contains("sudo -S"));
         // 白名单外不得出现其他 apt 包
         assert!(!s.contains("apt-get install -y g++"));
@@ -291,7 +297,8 @@ mod tests {
     #[test]
     fn pip_tools_have_bootstrap() {
         let d = crate::settings::AppSettings::default();
-        for tool in ["vllm", "sglang", "modelscope", "huggingface", "1cat-vllm", "parser-libs"] {
+        // sglang 走 uv venv（自带 pip），不在此列，见 sglang_install_uses_python312_venv
+        for tool in ["vllm", "modelscope", "huggingface", "1cat-vllm", "parser-libs"] {
             let s = build_install_script(&profile(), &d, tool, None).unwrap();
             assert!(s.contains("python3 -m pip --version"), "tool={tool}");
             assert!(s.contains("bootstrap.pypa.io/get-pip.py"), "tool={tool}");
@@ -331,14 +338,18 @@ mod tests {
     }
 
     #[test]
-    fn sglang_install_sets_pyo3_abi3_and_cargo_path() {
-        // sglang 依赖的 outlines_core 0.1.26 在 Python 3.14 上需 ABI3 前向兼容 + cargo 在 PATH
+    fn sglang_install_uses_python312_venv() {
+        // sglang 需跑在 Python 3.12（系统 python3 可能是 3.14，torch.compile 不支持 3.14，
+        // sglang import 即崩）。安装脚本用 uv 建 3.12 venv 再装 sglang。
         let d = crate::settings::AppSettings::default();
         let s = build_install_script(&profile(), &d, "sglang", None).unwrap();
-        assert!(s.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"), "sglang 未设 ABI3 前向兼容");
-        assert!(s.contains(".cargo/bin"), "sglang 未把 cargo 加入 PATH");
-        // 其它引擎不需要这两个环境变量
+        assert!(s.contains("uv python install 3.12"), "sglang 未装 Python 3.12: {s}");
+        assert!(s.contains("uv venv --python 3.12"), "sglang 未建 3.12 venv: {s}");
+        assert!(s.contains("sglang-venv/bin/python -m pip install"), "sglang 未装进 venv: {s}");
+        assert!(s.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"), "sglang 未设 ABI3 前向兼容: {s}");
+        // 其它引擎不需要 venv / ABI3
         let v = build_install_script(&profile(), &d, "vllm", None).unwrap();
+        assert!(!v.contains("sglang-venv"), "vllm 不应建 sglang venv");
         assert!(!v.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY"), "vllm 不应设 ABI3");
     }
 }

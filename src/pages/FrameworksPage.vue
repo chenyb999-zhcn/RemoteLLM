@@ -28,7 +28,10 @@ import {
   NSelect,
   NSpace,
   NSwitch,
+  NTabs,
+  NTabPane,
   NTag,
+  NTooltip,
   useDialog,
   useMessage,
   type DataTableColumns,
@@ -42,134 +45,7 @@ import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
 import type { DockerStatus, InstanceConfig, LocalImage } from "../lib/types";
 
-interface ParamDef {
-  key: string;
-  label: string;
-  type: "text" | "number" | "switch" | "select";
-  options?: string[];
-  /** 动态下拉选项来源（如本地 GGUF 模型列表） */
-  dynamicOptions?: "localGguf";
-  default?: string | number | boolean;
-  placeholder?: string;
-  step?: number;
-  nativeOnly?: boolean;
-  dockerOnly?: boolean;
-}
-
-interface FwMeta {
-  label: string;
-  desc: string;
-  defaultPort: number;
-  dockerImage: string;
-  params: ParamDef[];
-}
-
-const vllmParams: ParamDef[] = [
-  { key: "bin", label: "命令", type: "text", default: "vllm", placeholder: "vllm", nativeOnly: true },
-  { key: "tp", label: "张量并行 TP", type: "number", default: 1 },
-  { key: "maxModelLen", label: "max-model-len", type: "number", placeholder: "留空=自动" },
-  { key: "gpuMemUtil", label: "显存利用率", type: "number", default: 0.9, step: 0.05 },
-  { key: "dtype", label: "数据类型", type: "select", options: ["auto", "bfloat16", "float16", "half"], default: "auto" },
-  { key: "enforceEager", label: "enforce-eager", type: "switch", default: false },
-  { key: "servedModelName", label: "served-model-name", type: "text", placeholder: "留空=目录名" },
-  { key: "maxNumSeqs", label: "max-num-seqs", type: "number", placeholder: "留空=默认" },
-  { key: "maxNumBatchedTokens", label: "max-num-batched-tokens", type: "number", placeholder: "留空=默认" },
-  { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "gptq", "awq", "bitsandbytes"], placeholder: "留空=默认" },
-  { key: "trustRemoteCode", label: "trust-remote-code", type: "switch", default: false },
-  { key: "seed", label: "随机种子 seed", type: "number", placeholder: "留空=默认" },
-  // 采样参数（temperature/top-p 等）是 OpenAI API 每请求参数，vllm serve 无对应启动参数
-  { key: "extraArgs", label: "附加参数", type: "text", placeholder: "--limit-concurrency 32" },
-];
-
-const FW_META: Record<string, FwMeta> = {
-  "vllm": {
-    label: "vLLM",
-    desc: "高吞吐推理引擎（OpenAI 兼容 API）",
-    defaultPort: 8000,
-    dockerImage: "vllm/vllm-openai:latest",
-    params: vllmParams,
-  },
-  "1cat-vllm": {
-    label: "1Cat-vLLM",
-    desc: "vLLM fork（含 sm70/V100 支持）",
-    defaultPort: 8000,
-    dockerImage: "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5-preview",
-    // 1Cat-vLLM 预编译 wheel 只装 `vllm` 入口（无 1cat-vllm 命令），
-    // 且跑在 3.12 venv 里，裸命令名由启动脚本回退到 venv 二进制
-    params: vllmParams.map((p) =>
-      p.key === "bin" ? { ...p, default: "vllm" } : p,
-    ),
-  },
-  "sglang": {
-    label: "SGLang",
-    desc: "结构化生成优化的推理框架",
-    defaultPort: 30000,
-    dockerImage: "lmsysorg/sglang:latest-cu129",
-    params: [
-      { key: "tp", label: "张量并行 TP", type: "number", default: 1 },
-      { key: "memFractionStatic", label: "mem-fraction-static", type: "number", default: 0.85, step: 0.05 },
-      { key: "contextLength", label: "context-length", type: "number", placeholder: "留空=默认" },
-      { key: "host", label: "host", type: "text", default: "0.0.0.0" },
-      { key: "maxNumSeqs", label: "max-running-requests", type: "number", placeholder: "留空=默认" },
-      { key: "chunkedPrefillSize", label: "chunked-prefill-size", type: "number", placeholder: "留空=默认" },
-      { key: "dtype", label: "数据类型", type: "select", options: ["auto", "bfloat16", "float16", "half"], default: "auto" },
-      { key: "quantization", label: "量化 quantization", type: "select", options: ["fp8", "mxfp8", "awq", "gptq", "bitsandbytes", "gguf"], placeholder: "留空=默认" },
-      { key: "trustRemoteCode", label: "trust-remote-code", type: "switch", default: false },
-      // 采样参数（temperature/top-p 等）是 OpenAI API 每请求参数，sglang serve 无对应启动参数
-      { key: "extraArgs", label: "附加参数", type: "text" },
-    ],
-  },
-  "llama-cpp": {
-    label: "llama.cpp",
-    desc: "GGUF 量化模型推理（llama-server）",
-    defaultPort: 8080,
-    dockerImage: "ghcr.io/ggml-org/llama.cpp:server-cuda",
-    params: [
-      { key: "bin", label: "命令", type: "text", default: "llama-server", nativeOnly: true },
-      { key: "ngl", label: "GPU 层数 -ngl", type: "number", default: 99 },
-      { key: "ctxSize", label: "上下文 -c", type: "number", default: 4096 },
-      { key: "threads", label: "线程数", type: "number", default: 0, placeholder: "0=自动" },
-      { key: "host", label: "host", type: "text", default: "0.0.0.0" },
-      {
-        key: "cacheTypeK",
-        label: "KV缓存K类型",
-        type: "select",
-        options: ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "iq4_xs"],
-        default: "q4_0",
-      },
-      {
-        key: "cacheTypeV",
-        label: "KV缓存V类型",
-        type: "select",
-        options: ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "iq4_xs"],
-        default: "q4_0",
-      },
-      { key: "flashAttn", label: "Flash Attention", type: "select", options: ["on", "off"], default: "on" },
-      { key: "reasoning", label: "Reasoning 思考", type: "select", options: ["off", "on"], default: "off" },
-      { key: "mlock", label: "mlock 内存锁定", type: "switch", default: true },
-      { key: "temperature", label: "temperature", type: "number", default: 0.2, step: 0.05 },
-      { key: "topK", label: "top-k", type: "number", default: 40 },
-      { key: "topP", label: "top-p", type: "number", default: 0.95, step: 0.01 },
-      { key: "minP", label: "min-p", type: "number", default: 0.01, step: 0.01 },
-      {
-        key: "specType",
-        label: "投机解码",
-        type: "select",
-        options: ["none", "draft-mtp", "draft-dflash", "draft-dspark"],
-        default: "none",
-      },
-      {
-        key: "specDraftModel",
-        label: "Draft 模型",
-        type: "select",
-        dynamicOptions: "localGguf",
-        placeholder: "选 DFlash/DSpark sidecar GGUF",
-      },
-      { key: "specDraftNMax", label: "投机步数", type: "number", default: 4 },
-      { key: "extraArgs", label: "附加参数", type: "text" },
-    ],
-  },
-};
+import { FW_META, type ParamDef } from "../lib/fwParams";
 
 const serverStore = useServerStore();
 const settingsStore = useSettingsStore();
@@ -818,6 +694,30 @@ function paramOptions(p: ParamDef): { label: string; value: string }[] {
   return (p.options ?? []).map((o) => ({ label: o, value: o }));
 }
 
+function tabParams(tabKey: string): ParamDef[] {
+  return visibleParams.value.filter((p) => (p.tab ?? "") === tabKey);
+}
+
+function paramPlaceholder(p: ParamDef): string {
+  if (p.placeholder) return p.placeholder;
+  if (p.default !== undefined) {
+    const d = p.default === true ? "启用" : p.default === false ? "关闭" : p.default;
+    return `默认 ${d}`;
+  }
+  return "留空 = 引擎默认";
+}
+
+function paramTooltip(p: ParamDef): string {
+  const parts: string[] = [];
+  if (p.flag) parts.push(`CLI: ${p.flag}`);
+  if (p.desc) parts.push(p.desc);
+  if (p.default !== undefined) {
+    const d = p.default === true ? "启用" : p.default === false ? "关闭" : p.default;
+    parts.push(`默认: ${d}`);
+  }
+  return parts.join("\n");
+}
+
 function builtinImageOf(fw: string): string {
   if (fw === "1cat-vllm") {
     const p = current.value;
@@ -970,7 +870,7 @@ watch(
 
     <!-- 参数表单 -->
     <n-modal v-model:show="showModal" preset="card" :title="form.id ? '编辑实例' : '新建实例'" style="width: 720px">
-      <n-form label-placement="left" label-width="110">
+      <n-form label-placement="left" label-width="132">
         <n-form-item label="实例名称">
           <n-input v-model:value="form.name" placeholder="如 qwen7b-chat" />
         </n-form-item>
@@ -1017,28 +917,64 @@ watch(
         </n-form-item>
 
         <template v-else>
-          <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
-            <n-input
-              v-if="p.type === 'text'"
-              v-model:value="form.params[p.key]"
-              :placeholder="p.placeholder"
-            />
-            <n-input-number
-              v-else-if="p.type === 'number'"
-              v-model:value="form.params[p.key]"
-              :placeholder="p.placeholder"
-              :step="p.step ?? 1"
-              :min="0"
-            />
-            <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
-            <n-select
-              v-else
-              v-model:value="form.params[p.key]"
-              :options="paramOptions(p)"
-              :placeholder="p.placeholder"
-              clearable
-            />
-          </n-form-item>
+          <n-tabs v-if="meta.tabs" type="line" size="small" class="fw-param-tabs">
+            <n-tab-pane v-for="t in meta.tabs" :key="t.key" :name="t.key" :tab="t.label">
+              <n-form-item v-for="p in tabParams(t.key)" :key="p.key">
+                <template #label>
+                  <n-tooltip trigger="hover" placement="left">
+                    <template #trigger>
+                      <span class="param-label">{{ p.label }}</span>
+                    </template>
+                    <div class="param-tip">{{ paramTooltip(p) }}</div>
+                  </n-tooltip>
+                </template>
+                <n-input
+                  v-if="p.type === 'text'"
+                  v-model:value="form.params[p.key]"
+                  :placeholder="paramPlaceholder(p)"
+                />
+                <n-input-number
+                  v-else-if="p.type === 'number'"
+                  v-model:value="form.params[p.key]"
+                  :placeholder="paramPlaceholder(p)"
+                  :step="p.step ?? 1"
+                  :min="p.min ?? 0"
+                />
+                <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
+                <n-select
+                  v-else
+                  v-model:value="form.params[p.key]"
+                  :options="paramOptions(p)"
+                  :placeholder="paramPlaceholder(p)"
+                  clearable
+                />
+              </n-form-item>
+            </n-tab-pane>
+          </n-tabs>
+          <template v-else>
+            <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
+              <n-input
+                v-if="p.type === 'text'"
+                v-model:value="form.params[p.key]"
+                :placeholder="paramPlaceholder(p)"
+              />
+              <n-input-number
+                v-else-if="p.type === 'number'"
+                v-model:value="form.params[p.key]"
+                :placeholder="paramPlaceholder(p)"
+                :step="p.step ?? 1"
+                :min="p.min ?? 0"
+              />
+              <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
+              <n-select
+                v-else
+                v-model:value="form.params[p.key]"
+                :options="paramOptions(p)"
+                :placeholder="paramPlaceholder(p)"
+                clearable
+              />
+            </n-form-item>
+          </template>
         </template>
 
         <n-form-item label="启动命令预览">
@@ -1193,5 +1129,20 @@ watch(
   font-size: 12px;
   white-space: pre;
   overflow-x: auto;
+}
+.fw-param-tabs :deep(.n-tabs-nav) {
+  margin-bottom: 4px;
+}
+.fw-param-tabs :deep(.n-tab-pane) {
+  padding-top: 10px;
+}
+.param-label {
+  cursor: default;
+}
+.param-tip {
+  max-width: 340px;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-line;
 }
 </style>

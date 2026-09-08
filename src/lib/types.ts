@@ -219,7 +219,7 @@ export interface LocalImage {
   size: string | null;
 }
 
-/** 初始化检查单项 */
+/** 环境检查单项 */
 export interface InitItem {
   id: string;
   group: "sys" | "gpu" | "docker" | "tools" | "engine" | string;

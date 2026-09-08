@@ -438,7 +438,7 @@ pub async fn docker_proxy_start(
     Ok(task_id)
 }
 
-/// 只读：探测服务器 sudo 提权方式（初始化检查页 apt 安装前调用）
+/// 只读：探测服务器 sudo 提权方式（环境检查页 apt 安装前调用）
 #[tauri::command]
 pub async fn sudo_mode_check(
     state: State<'_, crate::AppState>,
