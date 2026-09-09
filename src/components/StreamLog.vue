@@ -11,18 +11,37 @@ const props = withDefaults(
   { maxHeight: "60vh", autoScroll: true, placeholder: "(等待输出...)" }
 );
 
+const emit = defineEmits<{
+  (e: "reachTop"): void;
+}>();
+
 const el = ref<HTMLElement | null>(null);
 // 智能跟底：仅当用户停留在底部附近时才自动滚到底；
 // 用户上翻查看历史时暂停跟底，滚回底部后自动恢复
 const stickToBottom = ref(true);
 const STICK_THRESHOLD = 40;
+const TOP_THRESHOLD = 30;
+
+// 前置内容插入锚定：记录插入前的 scrollHeight 与 scrollTop，
+// 渲染后把 scrollTop 增加内容增量，保持视口不动
+let anchor: { height: number; top: number } | null = null;
+
+/** 在文本前置插入内容前调用，保持当前视口不跳动 */
+function anchorBeforePrepend() {
+  if (el.value) anchor = { height: el.value.scrollHeight, top: el.value.scrollTop };
+}
+defineExpose({ anchorBeforePrepend });
 
 function isAtBottom(node: HTMLElement): boolean {
   return node.scrollTop + node.clientHeight >= node.scrollHeight - STICK_THRESHOLD;
 }
 
 function onScroll() {
-  if (el.value) stickToBottom.value = isAtBottom(el.value);
+  if (!el.value) return;
+  stickToBottom.value = isAtBottom(el.value);
+  if (el.value.scrollTop <= TOP_THRESHOLD) {
+    emit("reachTop");
+  }
 }
 
 watch(
@@ -30,7 +49,12 @@ watch(
   async () => {
     if (!props.autoScroll) return;
     await nextTick();
-    if (el.value && stickToBottom.value) {
+    if (!el.value) return;
+    if (anchor) {
+      // 前置插入：保持视口锚定
+      el.value.scrollTop = anchor.top + (el.value.scrollHeight - anchor.height);
+      anchor = null;
+    } else if (stickToBottom.value) {
       el.value.scrollTop = el.value.scrollHeight;
     }
   },

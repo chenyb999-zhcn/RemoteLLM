@@ -422,11 +422,17 @@ onBeforeUnmount(() => {
         <div v-if="!mergedCards.length" class="set-cap" style="padding: 8px 0">无可用 GPU</div>
       </n-card>
 
-      <!-- 拓扑 -->
-      <n-card v-if="result?.topo" size="small" title="GPU 拓扑（nvidia-smi topo -m）">
-        <pre class="topo">{{ result.topo }}</pre>
-      </n-card>
     </n-space>
+
+    <!-- 拓扑（放在 n-space 外，避免混合 key 的 fragment 补丁产生重复节点） -->
+    <n-card
+      v-if="current && result?.topo"
+      size="small"
+      title="GPU 拓扑（nvidia-smi topo -m）"
+      style="margin-top: 16px"
+    >
+      <pre class="topo">{{ result.topo }}</pre>
+    </n-card>
 
     <!-- 设置命令预览 -->
     <n-modal v-model:show="setPreviewShow" preset="card" :title="setActionTitle" style="width: 620px">

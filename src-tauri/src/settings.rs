@@ -50,6 +50,17 @@ pub struct AppSettings {
     /// deb(apt) 镜像源 id（tuna/aliyun/ustc/huawei/tencent/official），默认 tuna
     #[serde(default = "default_deb_mirror")]
     pub deb_mirror: String,
+    /// 用户添加的自定义框架镜像（框架管理页「添加框架镜像」）
+    #[serde(default)]
+    pub custom_frameworks: Vec<CustomFramework>,
+}
+
+/// 自定义框架镜像：label 显示名 + image 镜像地址
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomFramework {
+    pub label: String,
+    pub image: String,
 }
 
 fn default_pip_index() -> String {
@@ -140,6 +151,7 @@ impl Default for AppSettings {
             proxy_url: String::new(),
             pip_index: default_pip_index(),
             deb_mirror: default_deb_mirror(),
+            custom_frameworks: Vec::new(),
         }
     }
 }

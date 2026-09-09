@@ -164,7 +164,7 @@ pub fn build_install_script(
                 .onecat_image
                 .clone()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "vllm/vllm-openai:latest".into())
+                .unwrap_or_else(|| "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5".into())
                 .replace('\'', "'\\''");
             format!("docker pull '{img}' 2>&1")
         }

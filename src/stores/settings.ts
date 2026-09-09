@@ -15,6 +15,7 @@ const DEFAULTS: AppSettings = {
   proxyUrl: "",
   pipIndex: "tuna",
   debMirror: "tuna",
+  customFrameworks: [],
 };
 
 export const useSettingsStore = defineStore("settings", {
@@ -26,7 +27,7 @@ export const useSettingsStore = defineStore("settings", {
     async load() {
       if (this.loaded) return;
       try {
-        this.value = await api.getSettings();
+        this.value = { ...DEFAULTS, ...(await api.getSettings()) };
       } catch {
         this.value = { ...DEFAULTS };
       }

@@ -63,6 +63,7 @@ export const api = {
   instanceStatus: (id: string) => invoke<InstanceStatus>("instance_status", { id }),
   instanceLogs: (id: string, lines: number) =>
     invoke<string>("instance_logs", { id, lines }),
+  instanceLogTotalLines: (id: string) => invoke<number>("instance_log_total_lines", { id }),
 
   searchModels: (source: string, query: string, limit: number) =>
     invoke<ModelInfo[]>("search_models", { source, query, limit }),

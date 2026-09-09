@@ -30,6 +30,14 @@ export interface AppSettings {
   pipIndex: string;
   /** deb(apt) 镜像源 id：tuna/aliyun/ustc/huawei/tencent/official */
   debMirror: string;
+  /** 用户添加的自定义框架镜像（框架管理页） */
+  customFrameworks: CustomFramework[];
+}
+
+/** 自定义框架镜像：label 显示名 + image 镜像地址 */
+export interface CustomFramework {
+  label: string;
+  image: string;
 }
 
 /** 单个磁盘分区 */

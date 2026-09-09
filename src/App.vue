@@ -229,7 +229,7 @@ const menuOptions = [
     ),
   },
   {
-    label: "引擎管理",
+    label: "框架管理",
     key: "frameworks",
     icon: icon("M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"),
   },

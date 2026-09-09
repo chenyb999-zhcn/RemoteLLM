@@ -20,6 +20,11 @@ export const useInstanceStore = defineStore("instances", {
     logs: "",
     logsLoading: false,
     autoRefreshLogs: true,
+    // 已加载的日志行数（每次向上翻页 +500）
+    loadedLines: 500,
+    // 日志总行数（tail 行数 >= 该值即认为已到开头）
+    logTotalLines: 0,
+    loadingEarlier: false,
   }),
   actions: {
     async load() {
@@ -78,22 +83,53 @@ export const useInstanceStore = defineStore("instances", {
     },
     async openLogs(id: string) {
       this.logId = id;
+      this.loadedLines = 500;
+      this.logTotalLines = 0;
       await this.refreshLogs();
     },
     async refreshLogs() {
       if (!this.logId) return;
       this.logsLoading = true;
       try {
-        this.logs = await api.instanceLogs(this.logId, 300);
+        const [text, total] = await Promise.all([
+          api.instanceLogs(this.logId, this.loadedLines),
+          api.instanceLogTotalLines(this.logId),
+        ]);
+        this.logTotalLines = total;
+        this.logs = text;
       } catch (e: any) {
         this.logs = `加载日志失败: ${e?.message ?? JSON.stringify(e)}`;
       } finally {
         this.logsLoading = false;
       }
     },
+    /** 向上加载更早的 500 行（前置插入，返回是否还有更早内容） */
+    async loadEarlier(): Promise<boolean> {
+      if (!this.logId || this.loadingEarlier) return false;
+      this.loadingEarlier = true;
+      try {
+        const next = this.loadedLines + 500;
+        const [text, total] = await Promise.all([
+          api.instanceLogs(this.logId, next),
+          api.instanceLogTotalLines(this.logId),
+        ]);
+        this.logTotalLines = total;
+        const hasMore = this.loadedLines < total;
+        this.loadedLines = next;
+        this.logs = text;
+        return hasMore;
+      } catch (e: any) {
+        this.logs = `加载日志失败: ${e?.message ?? JSON.stringify(e)}`;
+        return false;
+      } finally {
+        this.loadingEarlier = false;
+      }
+    },
     closeLogs() {
       this.logId = null;
       this.logs = "";
+      this.loadedLines = 500;
+      this.logTotalLines = 0;
     },
   },
 });

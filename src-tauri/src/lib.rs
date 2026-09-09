@@ -65,6 +65,7 @@ pub fn run() {
             frameworks::instance_stop,
             frameworks::instance_status,
             frameworks::instance_logs,
+            frameworks::instance_log_total_lines,
             models::search_models,
             models::list_repo_files,
             models::check_download_tools,

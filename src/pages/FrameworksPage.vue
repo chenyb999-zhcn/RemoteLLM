@@ -27,6 +27,7 @@ import {
   NRadioGroup,
   NSelect,
   NSpace,
+  NSpin,
   NSwitch,
   NTabs,
   NTabPane,
@@ -63,12 +64,28 @@ const {
   logs,
   logsLoading,
   autoRefreshLogs,
+  loadedLines,
+  logTotalLines,
+  loadingEarlier,
 } = storeToRefs(store);
 const message = useMessage();
 const dialog = useDialog();
 
 let statusTimer: number | null = null;
 let logTimer: number | null = null;
+
+const logStreamRef = ref<InstanceType<typeof StreamLog> | null>(null);
+
+async function onLogReachTop() {
+  if (store.loadingEarlier || !store.logId) return;
+  if (store.loadedLines >= store.logTotalLines) return;
+  logStreamRef.value?.anchorBeforePrepend();
+  const hasMore = await store.loadEarlier();
+  if (!hasMore) {
+    // 已无更早内容：回退计数，提示"已显示全部"
+    store.loadedLines = Math.max(500, store.logTotalLines);
+  }
+}
 
 onMounted(async () => {
   if (current.value) {
@@ -104,7 +121,36 @@ const form = reactive({
   params: {} as Record<string, any>,
 });
 
-const meta = computed(() => FW_META[form.framework] ?? FW_META["vllm"]);
+const meta = computed(() => FW_META[form.framework] ?? null);
+// 自定义框架（非 4 内置）→ 简化表单（无参数选项，启动命令由用户填写）
+const isCustomFw = computed(() => !FW_META[form.framework]);
+
+interface FwOption {
+  value: string;
+  label: string;
+  image: string;
+  port: number;
+}
+
+/** 框架下拉选项：4 内置 + settings 里的自定义框架（value = 框架名） */
+const frameworkOptions = computed<FwOption[]>(() => [
+  ...Object.entries(FW_META).map(([k, v]) => ({
+    value: k,
+    label: v.label,
+    image: v.dockerImage,
+    port: v.defaultPort,
+  })),
+  ...settings.value.customFrameworks.map((c) => ({
+    value: c.label,
+    label: c.label,
+    image: c.image,
+    port: 8000,
+  })),
+]);
+
+function fwOption(fw: string): FwOption | undefined {
+  return frameworkOptions.value.find((o) => o.value === fw);
+}
 
 function defaultParams(fw: string): Record<string, any> {
   const out: Record<string, any> = {};
@@ -115,9 +161,16 @@ function defaultParams(fw: string): Record<string, any> {
 }
 
 function onFrameworkChange() {
-  form.port = meta.value.defaultPort;
-  form.dockerImage = meta.value.dockerImage;
-  form.params = defaultParams(form.framework);
+  const o = fwOption(form.framework);
+  form.port = o?.port ?? 8000;
+  form.dockerImage = o?.image ?? "";
+  if (isCustomFw.value) {
+    // 自定义框架：Docker 模式 + 启动命令模板（用户可自行修改）
+    form.mode = "docker";
+    form.params = { customCmd: `--model ${form.modelPath || "<模型路径>"} --port ${form.port}` };
+  } else {
+    form.params = defaultParams(form.framework);
+  }
 }
 
 // ---------- 本地 GGUF 模型列表（投机解码 draft 模型下拉，懒加载） ----------
@@ -153,11 +206,13 @@ function openEdit(inst: InstanceConfig) {
   form.id = inst.id;
   form.name = inst.name;
   form.framework = inst.framework;
-  form.mode = inst.mode;
+  form.mode = isCustomFwFor(inst.framework) ? "docker" : inst.mode;
   form.modelPath = inst.modelPath;
   form.port = inst.port;
-  form.dockerImage = inst.dockerImage ?? meta.value.dockerImage;
-  form.params = { ...defaultParams(inst.framework), ...(inst.params ?? {}) };
+  form.dockerImage = inst.dockerImage ?? fwOption(inst.framework)?.image ?? "";
+  form.params = isCustomFwFor(inst.framework)
+    ? { customCmd: typeof inst.params?.customCmd === "string" ? inst.params.customCmd : "" }
+    : { ...defaultParams(inst.framework), ...(inst.params ?? {}) };
   // 向后兼容：旧实例用 mtp 布尔开关，映射到 specType
   if (form.params.mtp === true && !form.params.specType) {
     form.params.specType = "draft-mtp";
@@ -166,13 +221,17 @@ function openEdit(inst: InstanceConfig) {
   ensureLocalGgufs();
 }
 
+function isCustomFwFor(fw: string): boolean {
+  return !FW_META[fw];
+}
+
 function buildPreviewConfig(): InstanceConfig {
   return {
     id: "preview",
     profileId: current.value?.id ?? "",
     name: form.name || "preview",
     framework: form.framework,
-    mode: form.mode,
+    mode: isCustomFw.value ? "docker" : form.mode,
     modelPath: form.modelPath,
     port: form.port,
     dockerImage: form.dockerImage || null,
@@ -202,6 +261,25 @@ watch(
   { deep: true },
 );
 
+function builtinImageOf(fw: string): string {
+  if (fw === "1cat-vllm") {
+    const p = current.value;
+    return p?.onecatImage?.trim() || FW_META["1cat-vllm"].dockerImage;
+  }
+  return FW_META[fw]?.dockerImage ?? "";
+}
+
+const isCustomImage = computed(
+  () => !isCustomFw.value && form.mode === "docker" && form.dockerImage.trim() !== builtinImageOf(form.framework),
+);
+
+watch(
+  () => [form.mode, form.framework, form.dockerImage],
+  () => {
+    if (!isCustomFw.value && !isCustomImage.value) delete form.params.customCmd;
+  },
+);
+
 async function onSubmit() {
   if (!form.name.trim()) {
     message.warning("请输入实例名称");
@@ -209,6 +287,15 @@ async function onSubmit() {
   }
   if (!form.modelPath.trim()) {
     message.warning("请输入模型路径");
+    return;
+  }
+  const isDocker = isCustomFw.value || form.mode === "docker";
+  if (isDocker && !form.dockerImage.trim()) {
+    message.warning("请输入镜像地址");
+    return;
+  }
+  if (isCustomFw.value && !String(form.params.customCmd ?? "").trim()) {
+    message.warning("自定义框架需填写启动命令（镜像后的参数）");
     return;
   }
   const cfg: InstanceConfig = {
@@ -445,6 +532,7 @@ const dockerInstallerRef = ref<InstanceType<typeof DockerInstaller> | null>(null
 const dockerStatus = ref<DockerStatus | null>(null);
 const localImages = ref<LocalImage[]>([]);
 const imagesLoading = ref(false);
+const customLabel = ref("");
 const customImage = ref("");
 const pulling = ref(false);
 const pullImage = ref("");
@@ -505,14 +593,78 @@ async function doGpuTest() {
 
 const builtinImages = computed(() => {
   const p = current.value;
-  const onecat = p?.onecatImage?.trim() || "vllm/vllm-openai:latest";
+  const onecat = p?.onecatImage?.trim() || FW_META["1cat-vllm"].dockerImage;
   return [
     { label: "1Cat-vLLM", image: onecat, isDefault: true },
     { label: "vLLM", image: "vllm/vllm-openai:latest", isDefault: false },
     { label: "SGLang", image: "lmsysorg/sglang:latest-cu129", isDefault: false },
     { label: "llama.cpp", image: "ghcr.io/ggml-org/llama.cpp:server-cuda", isDefault: false },
+    ...settings.value.customFrameworks.map((c) => ({
+      label: c.label,
+      image: c.image,
+      isDefault: false,
+    })),
   ];
 });
+
+/** 镜像地址合法性（与后端 docker.rs validate_image 同规则） */
+function validateImageName(img: string): string | null {
+  const t = img.trim();
+  if (!t) return "镜像地址不能为空";
+  if (t.length > 256) return "镜像地址过长（≤256 字符）";
+  if (!/^[A-Za-z0-9._:/@-]+$/.test(t))
+    return "镜像地址含非法字符（只允许字母数字 . _ / - : @）";
+  return null;
+}
+
+/** 添加自定义框架镜像：校验 → 持久化 → 拉取 */
+async function doAddCustomFramework() {
+  const label = customLabel.value.trim();
+  const image = customImage.value.trim();
+  if (!label) {
+    message.warning("请输入框架名");
+    return;
+  }
+  if (label.length > 30) {
+    message.warning("框架名过长（≤30 字符）");
+    return;
+  }
+  const imgErr = validateImageName(image);
+  if (imgErr) {
+    message.warning(imgErr);
+    return;
+  }
+  const dup =
+    builtinImages.value.find((b) => b.label === label || b.image === image) ??
+    frameworkOptions.value.find((o) => o.label === label);
+  if (dup) {
+    message.warning(`框架名或镜像已存在：${dup.label} → ${dup.image}`);
+    return;
+  }
+  // 先持久化记录，再拉取镜像
+  await settingsStore.save({
+    customFrameworks: [...settings.value.customFrameworks, { label, image }],
+  });
+  customLabel.value = "";
+  customImage.value = "";
+  message.success(`框架「${label}」已添加，开始拉取镜像`);
+  await doPull(image);
+}
+
+function removeCustomFramework(label: string) {
+  dialog.warning({
+    title: "移除自定义框架",
+    content: `确认移除「${label}」？（只删除框架记录，不删除服务器上已拉取的镜像）`,
+    positiveText: "移除",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      await settingsStore.save({
+        customFrameworks: settings.value.customFrameworks.filter((c) => c.label !== label),
+      });
+      message.success("已移除");
+    },
+  });
+}
 
 function imageState(img: string): string | null {
   const found = localImages.value.find((i) => i.name === img);
@@ -523,11 +675,16 @@ interface ImageRow {
   label: string;
   image: string;
   isDefault: boolean;
+  custom: boolean;
   state: string | null;
 }
 
 const imageRows = computed<ImageRow[]>(() =>
-  builtinImages.value.map((b) => ({ ...b, state: imageState(b.image) })),
+  builtinImages.value.map((b) => ({
+    ...b,
+    custom: settings.value.customFrameworks.some((c) => c.label === b.label),
+    state: imageState(b.image),
+  })),
 );
 
 const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
@@ -562,16 +719,29 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
   {
     title: "操作",
     key: "actions",
-    width: 100,
+    width: 130,
     render: (r) =>
-      h(NButton, {
-        size: "small",
-        type: "primary",
-        ghost: true,
-        disabled: !!r.state || pulling.value || !canUseDocker.value,
-        loading: pulling.value && pullImage.value === r.image,
-        onClick: () => doPull(r.image),
-      }, { default: () => "拉取" }),
+      h(NSpace, { size: 6 }, {
+        default: () => [
+          h(NButton, {
+            size: "small",
+            type: "primary",
+            ghost: true,
+            disabled: !!r.state || pulling.value || !canUseDocker.value,
+            loading: pulling.value && pullImage.value === r.image,
+            onClick: () => doPull(r.image),
+          }, { default: () => "添加" }),
+          ...(r.custom
+            ? [h(NButton, {
+                size: "small",
+                type: "error",
+                ghost: true,
+                disabled: pulling.value,
+                onClick: () => removeCustomFramework(r.label),
+              }, { default: () => "移除" })]
+            : []),
+        ],
+      }),
   },
 ]);
 
@@ -679,7 +849,7 @@ async function onDockerSuccess() {
 
 const visibleParams = computed(() => {
   const specType = form.params.specType as string | undefined;
-  return meta.value.params.filter((p) => {
+  return (meta.value?.params ?? []).filter((p) => {
     if (p.nativeOnly && form.mode === "docker") return false;
     if (p.dockerOnly && form.mode === "native") return false;
     // 投机解码：draft 模型仅 dflash/dspark 需要；步数仅启用时显示
@@ -718,26 +888,6 @@ function paramTooltip(p: ParamDef): string {
   return parts.join("\n");
 }
 
-function builtinImageOf(fw: string): string {
-  if (fw === "1cat-vllm") {
-    const p = current.value;
-    return p?.onecatImage?.trim() || FW_META["1cat-vllm"].dockerImage;
-  }
-  return FW_META[fw]?.dockerImage ?? "";
-}
-
-const isCustomImage = computed(
-  () =>
-    form.mode === "docker" &&
-    form.dockerImage.trim() !== builtinImageOf(form.framework),
-);
-
-watch(
-  () => [form.mode, form.framework, form.dockerImage],
-  () => {
-    if (!isCustomImage.value) delete form.params.customCmd;
-  },
-);
 </script>
 
 <template>
@@ -801,27 +951,33 @@ watch(
       />
       <n-space align="center" style="margin-top: 12px">
         <n-input
+          v-model:value="customLabel"
+          placeholder="框架名，如 my-vllm"
+          style="width: 180px"
+          :disabled="!canUseDocker"
+        />
+        <n-input
           v-model:value="customImage"
-          placeholder="自定义镜像，如 nvcr.io/nvidia/xxx:tag 或 registry:5000/xxx:1.0"
-          style="width: 520px"
+          placeholder="框架镜像，如 nvcr.io/nvidia/xxx:tag 或 registry:5000/xxx:1.0"
+          style="width: 420px"
           :disabled="!canUseDocker"
         />
         <n-button
           type="primary"
           :loading="pulling && pullImage === customImage"
-          :disabled="!customImage.trim() || pulling || !canUseDocker"
-          @click="doPull(customImage)"
+          :disabled="!customLabel.trim() || !customImage.trim() || pulling || !canUseDocker"
+          @click="doAddCustomFramework"
         >
-          拉取
+          添加
         </n-button>
       </n-space>
       <div class="fw-desc" style="margin-top: 8px">
-        已存在的镜像不可重复拉取。使用自拉取的镜像创建实例时，需自行定义启动参数（模型按原路径挂载进容器）。
+        添加自定义框架镜像（框架名 + 镜像地址），校验通过后自动拉取并加入下方列表；自定义框架可在新建实例时选择。
       </div>
     </n-card>
 
-    <!-- 引擎管理 -->
-    <n-card size="small" title="引擎管理" style="margin-bottom: 16px">
+    <!-- 原生框架管理 -->
+    <n-card size="small" title="原生框架管理" style="margin-bottom: 16px">
       <template #header-extra>
         <n-button size="small" :loading="detecting" @click="current && store.detect(current.id)">
           重新检测
@@ -860,7 +1016,7 @@ watch(
     </n-card>
 
     <!-- 实例列表 -->
-    <n-card size="small" title="引擎实例">
+    <n-card size="small" title="框架实例">
       <template #header-extra>
         <n-button type="primary" size="small" @click="openAdd">新建实例</n-button>
       </template>
@@ -868,7 +1024,7 @@ watch(
       <n-empty v-if="!instances.length" description="还没有实例，点击「新建实例」配置模型与启动参数" style="padding: 24px 0" />
     </n-card>
 
-    <!-- 参数表单 -->
+    <!-- 实例表单 -->
     <n-modal v-model:show="showModal" preset="card" :title="form.id ? '编辑实例' : '新建实例'" style="width: 720px">
       <n-form label-placement="left" label-width="132">
         <n-form-item label="实例名称">
@@ -877,57 +1033,113 @@ watch(
         <n-form-item label="框架">
           <n-select
             :value="form.framework"
-            :options="Object.entries(FW_META).map(([k, v]) => ({ label: v.label, value: k }))"
+            :options="frameworkOptions.map((o) => ({ label: o.label, value: o.value }))"
             @update:value="(v: string) => ((form.framework = v), onFrameworkChange())"
           />
         </n-form-item>
-        <n-form-item label="运行模式">
-          <n-radio-group v-model:value="form.mode">
-            <n-radio-button value="native">原生进程（nohup + PID）</n-radio-button>
-            <n-radio-button value="docker">Docker 容器</n-radio-button>
-          </n-radio-group>
-        </n-form-item>
-        <n-form-item :label="form.framework === 'llama-cpp' ? '模型文件' : '模型目录'">
-          <n-input
-            v-model:value="form.modelPath"
-            :placeholder="current ? `${current.baseDir}/models/...` : ''"
-          />
-        </n-form-item>
-        <n-form-item label="端口">
-          <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 160px" />
-        </n-form-item>
-        <n-form-item v-if="form.mode === 'docker'" label="镜像">
-          <n-input
-            v-model:value="form.dockerImage"
-            :placeholder="builtinImageOf(form.framework)"
-          />
-          <div v-if="isCustomImage" class="fw-desc" style="margin-top: 4px">
-            自定义镜像：下方需自行填写启动参数
-          </div>
-        </n-form-item>
 
-        <n-form-item v-if="isCustomImage" label="启动参数">
-          <n-input
-            v-model:value="form.params.customCmd"
-            type="textarea"
-            :autosize="{ minRows: 2, maxRows: 6 }"
-            :placeholder="`如 python3 -m sglang.launch_server --model-path ${form.modelPath || '<模型路径>'} --port ${form.port} --tp 1`"
-            class="preview"
-          />
-        </n-form-item>
+        <!-- 自定义框架：简化表单（无参数选项），启动命令由用户填写 -->
+        <template v-if="isCustomFw">
+          <n-form-item label="模型路径">
+            <n-input
+              v-model:value="form.modelPath"
+              :placeholder="current ? `${current.baseDir}/models/...` : ''"
+            />
+          </n-form-item>
+          <n-form-item label="端口">
+            <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 160px" />
+          </n-form-item>
+          <n-form-item label="镜像">
+            <n-input v-model:value="form.dockerImage" placeholder="框架默认镜像" />
+          </n-form-item>
+          <n-form-item label="启动命令">
+            <n-input
+              v-model:value="form.params.customCmd"
+              type="textarea"
+              :autosize="{ minRows: 3, maxRows: 10 }"
+              :placeholder="'镜像后的参数，如 --model /mnt/models/xx --port 8000 --tp 1'"
+              class="preview"
+            />
+            <div class="fw-desc" style="margin-top: 4px">
+              填写镜像后的启动参数（Docker 容器运行，模型路径按原样挂载进容器）
+            </div>
+          </n-form-item>
+        </template>
 
+        <!-- 内置框架：保留完整参数设置 -->
         <template v-else>
-          <n-tabs v-if="meta.tabs" type="line" size="small" class="fw-param-tabs">
-            <n-tab-pane v-for="t in meta.tabs" :key="t.key" :name="t.key" :tab="t.label">
-              <n-form-item v-for="p in tabParams(t.key)" :key="p.key">
-                <template #label>
-                  <n-tooltip trigger="hover" placement="left">
-                    <template #trigger>
-                      <span class="param-label">{{ p.label }}</span>
-                    </template>
-                    <div class="param-tip">{{ paramTooltip(p) }}</div>
-                  </n-tooltip>
-                </template>
+          <n-form-item label="运行模式">
+            <n-radio-group v-model:value="form.mode">
+              <n-radio-button value="native">原生进程（nohup + PID）</n-radio-button>
+              <n-radio-button value="docker">Docker 容器</n-radio-button>
+            </n-radio-group>
+          </n-form-item>
+          <n-form-item :label="form.framework === 'llama-cpp' ? '模型文件' : '模型目录'">
+            <n-input
+              v-model:value="form.modelPath"
+              :placeholder="current ? `${current.baseDir}/models/...` : ''"
+            />
+          </n-form-item>
+          <n-form-item label="端口">
+            <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 160px" />
+          </n-form-item>
+          <n-form-item v-if="form.mode === 'docker'" label="镜像">
+            <n-input
+              v-model:value="form.dockerImage"
+              :placeholder="builtinImageOf(form.framework)"
+            />
+            <div v-if="isCustomImage" class="fw-desc" style="margin-top: 4px">
+              自定义镜像：下方需自行填写启动参数
+            </div>
+          </n-form-item>
+
+          <n-form-item v-if="isCustomImage" label="启动参数">
+            <n-input
+              v-model:value="form.params.customCmd"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 6 }"
+              :placeholder="`如 python3 -m sglang.launch_server --model-path ${form.modelPath || '<模型路径>'} --port ${form.port} --tp 1`"
+              class="preview"
+            />
+          </n-form-item>
+
+          <template v-else>
+            <n-tabs v-if="meta?.tabs" type="line" size="small" class="fw-param-tabs">
+              <n-tab-pane v-for="t in meta.tabs" :key="t.key" :name="t.key" :tab="t.label">
+                <n-form-item v-for="p in tabParams(t.key)" :key="p.key">
+                  <template #label>
+                    <n-tooltip trigger="hover" placement="left">
+                      <template #trigger>
+                        <span class="param-label">{{ p.label }}</span>
+                      </template>
+                      <div class="param-tip">{{ paramTooltip(p) }}</div>
+                    </n-tooltip>
+                  </template>
+                  <n-input
+                    v-if="p.type === 'text'"
+                    v-model:value="form.params[p.key]"
+                    :placeholder="paramPlaceholder(p)"
+                  />
+                  <n-input-number
+                    v-else-if="p.type === 'number'"
+                    v-model:value="form.params[p.key]"
+                    :placeholder="paramPlaceholder(p)"
+                    :step="p.step ?? 1"
+                    :min="p.min ?? 0"
+                  />
+                  <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
+                  <n-select
+                    v-else
+                    v-model:value="form.params[p.key]"
+                    :options="paramOptions(p)"
+                    :placeholder="paramPlaceholder(p)"
+                    clearable
+                  />
+                </n-form-item>
+              </n-tab-pane>
+            </n-tabs>
+            <template v-else>
+              <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
                 <n-input
                   v-if="p.type === 'text'"
                   v-model:value="form.params[p.key]"
@@ -949,31 +1161,7 @@ watch(
                   clearable
                 />
               </n-form-item>
-            </n-tab-pane>
-          </n-tabs>
-          <template v-else>
-            <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
-              <n-input
-                v-if="p.type === 'text'"
-                v-model:value="form.params[p.key]"
-                :placeholder="paramPlaceholder(p)"
-              />
-              <n-input-number
-                v-else-if="p.type === 'number'"
-                v-model:value="form.params[p.key]"
-                :placeholder="paramPlaceholder(p)"
-                :step="p.step ?? 1"
-                :min="p.min ?? 0"
-              />
-              <n-switch v-else-if="p.type === 'switch'" v-model:value="form.params[p.key]" />
-              <n-select
-                v-else
-                v-model:value="form.params[p.key]"
-                :options="paramOptions(p)"
-                :placeholder="paramPlaceholder(p)"
-                clearable
-              />
-            </n-form-item>
+            </template>
           </template>
         </template>
 
@@ -1083,7 +1271,7 @@ watch(
     <!-- 日志抽屉 -->
     <n-drawer
       :show="!!logId"
-      :width="680"
+      :width="'66.7vw'"
       @update:show="(v: boolean) => v || store.closeLogs()"
     >
       <n-drawer-content closable>
@@ -1098,13 +1286,38 @@ watch(
             </n-space>
           </n-space>
         </template>
-        <StreamLog :text="logs" :placeholder="'(空)'" :max-height="'calc(100vh - 220px)'" />
+        <div class="log-pager">
+          <template v-if="loadingEarlier">
+            <n-spin size="small" /> 正在加载更早的日志...
+          </template>
+          <template v-else-if="loadedLines >= logTotalLines">
+            已显示全部 {{ logTotalLines }} 行
+          </template>
+          <template v-else>
+            已加载最后 {{ loadedLines }} / {{ logTotalLines }} 行，向上滚动加载更早
+          </template>
+        </div>
+        <StreamLog
+          ref="logStreamRef"
+          :text="logs"
+          :placeholder="'(空)'"
+          :max-height="'calc(100vh - 280px)'"
+          @reach-top="onLogReachTop"
+        />
       </n-drawer-content>
     </n-drawer>
   </div>
 </template>
 
 <style scoped>
+.log-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 8px;
+}
 .fw-name {
   font-size: 14px;
   font-weight: 600;

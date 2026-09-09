@@ -751,7 +751,7 @@ pub fn build_items(
                 if hit {
                     None
                 } else {
-                    Some("未拉取（引擎管理页可拉取）".into())
+                    Some("未拉取（框架管理页可添加）".into())
                 },
             )
         });
@@ -788,7 +788,7 @@ pub async fn server_init_check(
         .onecat_image
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "vllm/vllm-openai".into());
+        .unwrap_or_else(|| "ghcr.io/chenyb999-zhcn/1cat-vllm".into());
 
     let mut conns = state.conns.lock().await;
     let Some(session) = conns.get_mut(&profile_id) else {

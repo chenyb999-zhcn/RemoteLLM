@@ -46,7 +46,7 @@ const FIX_LABEL: Record<string, string> = {
   "docker-install": "安装 Docker",
   "docker-authorize": "授权",
   "docker-proxy": "配置 daemon 代理",
-  "goto-frameworks": "去引擎管理拉取",
+  "goto-frameworks": "去框架管理添加",
   apt: "安装",
 };
 

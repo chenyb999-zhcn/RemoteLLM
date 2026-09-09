@@ -909,8 +909,29 @@ pub async fn instance_logs(
     let (inst, profile) = get_instance(&app, &state, &id).await?;
     let s = slug(&inst.name);
     let log = format!("{}/{}.log", profile.logs_dir(), s);
-    let cmd = format!("tail -n {} {} 2>/dev/null || echo '(无日志)'", lines, log);
+    // 注意：ssh 会话的 $HOME 可能被客户端环境污染，路径中的 $HOME 必须用双引号包裹
+    // 强制 shell 展开（单引号会按字面量传给 [ -f ]，导致误判文件不存在）
+    let cmd = format!(
+        "if [ -f \"{l}\" ]; then tail -n {n} \"{l}\"; else echo '(无日志)'; fi",
+        l = log,
+        n = lines
+    );
     Ok(run_on(&state, &profile.id, &cmd).await?)
+}
+
+/// 日志文件总行数（用于判断是否已加载到开头）
+#[tauri::command]
+pub async fn instance_log_total_lines(
+    app: AppHandle,
+    state: State<'_, crate::AppState>,
+    id: String,
+) -> Result<u32, AppError> {
+    let (inst, profile) = get_instance(&app, &state, &id).await?;
+    let s = slug(&inst.name);
+    let log = format!("{}/{}.log", profile.logs_dir(), s);
+    let cmd = format!("wc -l < \"{l}\" 2>/dev/null || echo 0", l = log);
+    let out = run_on(&state, &profile.id, &cmd).await?;
+    Ok(out.trim().parse().unwrap_or(0))
 }
 
 #[cfg(test)]

@@ -278,7 +278,7 @@ onMounted(() => store.loadProfiles());
           <n-form-item label="1Cat 镜像">
             <n-input
               v-model:value="form.onecatImage"
-              placeholder="留空=默认 vllm/vllm-openai:latest"
+              placeholder="留空=默认 ghcr.io/chenyb999-zhcn/1cat-vllm:1.5"
             />
           </n-form-item>
         </template>
