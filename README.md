@@ -1,118 +1,122 @@
 # RemoteLLM
 
-基于 Rust + Tauri v2 的 Windows 桌面应用，通过 SSH 远程管理 GPU Linux 服务器上的 LLM 推理环境：从环境体检、驱动运维、推理框架部署，到模型下载、实例启停与实时监控，一站式完成，无需在服务器上手动敲命令。
+English | [简体中文](README.zh-CN.md)
+
+A Windows desktop app built with Rust + Tauri v2 that manages LLM inference environments on remote GPU Linux servers over SSH — from environment checks and driver maintenance to inference framework deployment, model downloads, instance start/stop and real-time monitoring, all in one place without typing commands on the server.
 
 ![release](https://img.shields.io/github/v/release/chenyb999-zhcn/RemoteLLM)
 ![license](https://img.shields.io/github/license/chenyb999-zhcn/RemoteLLM)
 ![platform](https://img.shields.io/badge/platform-Windows-blue)
 ![tauri](https://img.shields.io/badge/Tauri-v2-orange)
 
-## 界面总览
+## Screenshots
 
-### 总览监控
+> Note: the UI is currently in Chinese. English localization is on the roadmap.
 
-环境信息卡片（系统 / CPU / 多分区磁盘 / Python / CUDA / 驱动 / Docker）；GPU 利用率、显存、温度、功耗实时曲线与 GPU 进程列表；推理服务 `/metrics` 指标抓取 + 折线图（自动勾选关键指标，支持手动勾选与自动刷新）。
+### Dashboard
 
-<img src="screenshoot/ScreenShot_2026-09-05_174341_871.png" width="840" alt="总览监控"/>
+Environment info cards (OS / CPU / multi-partition disks / Python / CUDA / driver / Docker); real-time curves for GPU utilization, memory, temperature and power, plus a GPU process list; `/metrics` scraping from inference services with line charts (key metrics auto-selected, manual selection and auto-refresh supported).
 
-### 环境检查
+<img src="screenshoot/ScreenShot_2026-09-05_174341_871.png" width="840" alt="Dashboard"/>
 
-24 项体检（基础工具 / GPU 驱动 / Docker 与 GPU 运行时 / 模型工具 / 推理引擎 / CUDA 库），缺失项一键修复（pip / apt / Docker 安装授权 / 跳转拉取镜像）；V100 等 sm70 卡型兼容性提示；驱动等手动项提供复制命令。
+### Environment Check
 
-<img src="screenshoot/ScreenShot_2026-09-05_174411_000.png" width="840" alt="环境检查"/>
+A 24-item health check (essential tools / GPU driver / Docker & GPU runtime / model tooling / inference engines / CUDA libraries) with one-click fixes (pip / apt / Docker install & authorization / jump to image pull); sm70 compatibility hints for cards like the V100; copyable commands for manual items such as driver installation.
 
-### GPU 管理
+<img src="screenshoot/ScreenShot_2026-09-05_174411_000.png" width="840" alt="Environment Check"/>
 
-每卡概览（型号 / 序列号 / VBIOS / PCIe / ECC / 降频原因，兼容新旧驱动位掩码格式）；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关与功耗上限调整（sudo 密码流）；GPU 拓扑展示。
+### GPU Management
 
-<img src="screenshoot/ScreenShot_2026-09-05_174436_238.png" width="840" alt="GPU 管理"/>
+Per-GPU overview (model / serial / VBIOS / PCIe / ECC / throttle reasons, compatible with both legacy and modern driver bitmask formats); GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display.
 
-### 框架管理
+<img src="screenshoot/ScreenShot_2026-09-05_174436_238.png" width="840" alt="GPU Management"/>
 
-Docker 镜像一键添加 / 拉取，「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验后自动拉取并持久保存）；vLLM / 1Cat-vLLM / SGLang / llama.cpp 原生框架检测；实例参数动态表单 + 启动命令实时预览；运行日志抽屉（初始 500 行，滚动到顶自动加载更早内容）。
+### Framework Management
 
-<img src="screenshoot/ScreenShot_2026-09-05_174454_409.png" width="840" alt="框架管理"/>
+One-click add / pull of Docker images; "Add Framework Image" supports images from any registry (framework name + image address, validated before automatic pull and persisted); native framework detection for vLLM / 1Cat-vLLM / SGLang / llama.cpp; dynamic instance parameter forms with live command preview; run-log drawer (last 500 lines initially, older lines load on scroll-to-top).
 
-### 模型管理
+<img src="screenshoot/ScreenShot_2026-09-05_174454_409.png" width="840" alt="Framework Management"/>
 
-ModelScope / Hugging Face 搜索与服务器端流式下载；本地模型扫描使用官方 `gguf` / `safetensors` 包解析头部（架构 / 参数量 / 上下文 / 量化，分片组聚合），带持久化解析缓存——目录未变化时刷新秒级返回。
+### Model Management
 
-<img src="screenshoot/ScreenShot_2026-09-05_174519_705.png" width="840" alt="模型管理"/>
+ModelScope / Hugging Face search with server-side streaming downloads; local model scanning parses headers with the official `gguf` / `safetensors` packages (architecture / parameter count / context size / quantization, split-shard aggregation) and a persistent metadata cache — refreshing an unchanged directory returns in seconds.
 
-### 设置
+<img src="screenshoot/ScreenShot_2026-09-05_174519_705.png" width="840" alt="Model Management"/>
 
-默认下载来源、模型目录、HF 镜像端点 + Token、轮询间隔、深色主题；下载代理（启用后模型下载 / pip / git clone 走代理，Docker 拉镜像自动配置 daemon）。
+### Settings
 
-<img src="screenshoot/ScreenShot_2026-09-05_174529_929.png" width="840" alt="设置"/>
+Default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; Docker daemon proxy is configured automatically for image pulls).
 
-## 功能特性
+<img src="screenshoot/ScreenShot_2026-09-05_174529_929.png" width="840" alt="Settings"/>
 
-- **服务器管理**：多服务器档案（密码 / 公钥认证），SSH 连接与断开，启动自动连接
-- **总览**：环境信息卡片；GPU 利用率 / 显存 / 温度 / 功耗实时曲线、GPU 进程列表（pmon）；推理服务 `/metrics` 指标抓取 + 折线图（自动勾选关键指标 + 手动勾选、自动刷新）
-- **环境检查**：24 项体检，一键修复（pip / apt sudo / Docker 安装授权 / 跳转拉取）；dpkg + pip 双通道检测 12 个 CUDA 库（cuBLAS / cuDNN / NCCL / TensorRT-LLM 等）；V100 等 sm70 卡型兼容性提示
-- **GPU 管理**：每卡概览 + 迷你趋势图；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关、功耗上限调整（sudo 密码流）；GPU 拓扑展示
-- **框架管理**：
-  - Docker 镜像：内置四框架镜像一键添加；「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验，自动拉取并持久保存，可随时移除）
-  - 原生框架检测：vLLM / 1Cat-vLLM / SGLang / llama.cpp 安装状态与版本，一键安装 / 升级 / 卸载
-  - 新建实例按框架分流：内置四框架保留完整参数 Tab 分页设置（悬停查看 CLI 旗标与官方默认值）；自定义框架为简化表单，启动命令由用户自行填写
-  - 实例启停：原生进程（nohup + PID）或 Docker 容器（`--gpus all`、模型路径原样挂载）；启动命令实时预览
-  - 运行日志：初始加载最后 500 行，滚动到顶自动加载更早 500 行（视口锚定不跳动），抽屉宽度为窗口 2/3
-- **模型管理**：ModelScope / Hugging Face 搜索，服务器端下载（流式日志）；本地模型扫描用官方 `gguf` / `safetensors` 包解析头部（架构 / 参数量 / 上下文 / 量化，分片组聚合）；持久化解析缓存（目录指纹未变化时刷新秒级返回，含重启应用后）；模型删除
-- **设置**：默认下载来源、模型目录、HF 镜像端点 + Token、轮询间隔、深色主题；下载代理（启用后模型下载 / pip / git clone 走代理，Docker 拉镜像自动配置 daemon）
-- **一键安装**：pip / git+cmake / docker pull 安装框架与工具链；1Cat-vLLM 仓库地址与镜像可在服务器档案中配置
+## Features
 
-## 快速上手
+- **Server management**: multiple server profiles (password / public-key auth), SSH connect & disconnect, auto-connect to the last server on startup
+- **Dashboard**: environment info cards; real-time GPU utilization / memory / temperature / power curves and GPU process list (pmon); `/metrics` scraping from inference services with line charts (auto-selected key metrics + manual selection, auto-refresh)
+- **Environment check**: 24-item health check with one-click fixes (pip / apt sudo / Docker install & authorization / jump to image pull); 12 CUDA libraries detected via both dpkg and pip (cuBLAS / cuDNN / NCCL / TensorRT-LLM, etc.); sm70 compatibility hints for cards like the V100
+- **GPU management**: per-GPU overview with mini trend charts; GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display
+- **Framework management**:
+  - Docker images: one-click add for the four built-in framework images; "Add Framework Image" supports images from any registry (framework name + image address, validated, pulled automatically and persisted, removable at any time)
+  - Native framework detection: install status and version for vLLM / 1Cat-vLLM / SGLang / llama.cpp, with one-click install / upgrade / uninstall
+  - Instance creation branches by framework: the four built-in frameworks keep the full tabbed parameter settings (hover for CLI flags and official defaults); custom frameworks use a simplified form where the startup command is written by the user
+  - Instance start/stop: native process (nohup + PID) or Docker container (`--gpus all`, model path mounted as-is); live startup command preview
+  - Run logs: loads the last 500 lines initially, automatically loads 500 more when scrolled to the top (viewport-anchored, no jumping); drawer width is 2/3 of the window
+- **Model management**: ModelScope / Hugging Face search with server-side downloads (streaming logs); local model scanning with official `gguf` / `safetensors` header parsing (architecture / parameter count / context size / quantization, split-shard aggregation); persistent metadata cache (instant refresh while the directory fingerprint is unchanged, even across app restarts); model deletion
+- **Settings**: default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; the Docker daemon proxy is configured automatically)
+- **One-click install**: pip / git+cmake / docker pull to install frameworks and toolchains; the 1Cat-vLLM repository URL and image are configurable per server profile
 
-1. **安装**：从 [Releases](https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest) 下载 `RemoteLLM_*_x64-setup.exe` 安装
-2. **添加服务器**：填写主机、账号、认证方式（密码或私钥），连接
-3. **环境体检**：环境检查页查看 24 项结果，缺失项一键修复
-4. **准备框架**：Docker 镜像页添加 / 拉取镜像（可添加自定义框架镜像），或原生框架一键安装
-5. **创建实例**：选框架、模型路径、参数（自定义框架直接填写启动命令）→ 启动
-6. **监控运维**：总览页看 GPU 曲线与 `/metrics` 指标；日志抽屉查看实例输出
+## Quick Start
 
-## 下载安装
+1. **Install**: download `RemoteLLM_*_x64-setup.exe` from [Releases](https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest)
+2. **Add a server**: enter host, account and authentication (password or private key), then connect
+3. **Health check**: review the 24 items on the Environment Check page and fix missing ones with one click
+4. **Prepare a framework**: add / pull images on the Docker images card (custom framework images supported), or one-click install a native framework
+5. **Create an instance**: pick a framework, model path and parameters (for custom frameworks, write the startup command directly) → start
+6. **Monitor**: watch GPU curves and `/metrics` on the dashboard; view instance output in the log drawer
 
-- 下载地址：<https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest>
-- 平台：Windows 10 / 11 x64（NSIS 安装包 `RemoteLLM_<版本>_x64-setup.exe`）
-- 依赖 WebView2 Runtime：Windows 11 自带；Windows 10 缺失时安装器会自动引导安装
+## Download & Installation
 
-## 远程目录约定
+- URL: <https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest>
+- Platform: Windows 10 / 11 x64 (NSIS installer `RemoteLLM_<version>_x64-setup.exe`)
+- Requires the WebView2 Runtime: bundled with Windows 11; the installer bootstraps it on Windows 10 if missing
 
-所有远端操作统一使用 `~/RemoteLLM/` 根目录（可在服务器档案中修改）：
+## Remote Directory Layout
+
+All remote operations use the `~/RemoteLLM/` root directory by default (configurable per server profile):
 
 ```
 ~/RemoteLLM/
-├── models/   # 模型权重
-├── run/      # 实例 PID 文件
-└── logs/     # 实例日志
+├── models/   # model weights
+├── run/      # instance PID files
+└── logs/     # instance logs
 ```
 
-## 技术栈
+## Tech Stack
 
-| 层 | 技术 |
+| Layer | Technology |
 |---|---|
-| 前端 | Vue 3 + TypeScript + Naive UI + Pinia + Chart.js |
-| 后端 | Rust + Tauri v2 |
-| SSH | russh（密码 / 公钥认证） |
-| 存储 | tauri-plugin-store（本机 JSON） |
+| Frontend | Vue 3 + TypeScript + Naive UI + Pinia + Chart.js |
+| Backend | Rust + Tauri v2 |
+| SSH | russh (password / public-key auth) |
+| Storage | tauri-plugin-store (local JSON) |
 
-## 开发与构建
+## Development & Build
 
 ```bash
 npm install
-npm run tauri dev              # 开发运行
-npx vue-tsc --noEmit           # 前端类型检查
-cargo test                     # Rust 测试（src-tauri/ 下执行）
-npm run tauri build -- --bundles nsis   # 打包
-# 产物: src-tauri/target/release/bundle/nsis/RemoteLLM_*_x64-setup.exe
+npm run tauri dev              # dev server
+npx vue-tsc --noEmit           # frontend type check
+cargo test                     # Rust tests (run in src-tauri/)
+npm run tauri build -- --bundles nsis   # package
+# Output: src-tauri/target/release/bundle/nsis/RemoteLLM_*_x64-setup.exe
 ```
 
-## 注意事项
+## Notes
 
-- **V100（sm70）用户**：官方 vLLM 新版已不支持 sm70，建议使用 1Cat-vLLM（vLLM fork，含 SM70 支持），默认镜像 `ghcr.io/chenyb999-zhcn/1cat-vllm:1.5`
-- **sudo 操作**：走密码流，密码仅当次使用、不保存；服务器配置免密 sudo 或 root 登录则无感知
-- **代理**：设置页启用下载代理后，模型下载 / pip / git clone 走代理；Docker 拉镜像时若 daemon 代理不一致会自动引导配置（重启 docker，运行中容器会中断）
-- **凭据安全**：SSH 密码 / 私钥路径、HF Token 仅存储于本机应用数据目录（JSON），不上传任何服务器
+- **V100 (sm70) users**: recent official vLLM releases no longer support sm70 — use 1Cat-vLLM instead (a vLLM fork with SM70 support), default image `ghcr.io/chenyb999-zhcn/1cat-vllm:1.5`
+- **sudo operations**: use the password flow — passwords are used once and never stored; passwordless sudo or root login on the server makes this seamless
+- **Proxy**: once the download proxy is enabled in Settings, model downloads / pip / git clone go through it; if the Docker daemon proxy mismatches during an image pull, the app guides you through reconfiguring it (docker restarts, running containers are interrupted)
+- **Credential safety**: SSH passwords / key paths and HF tokens are stored only in the local app data directory (JSON) and never uploaded anywhere
 
 ## License
 
