@@ -27,41 +27,14 @@
 
 ## 界面总览
 
-### 总览监控
+<img src="screenshoot/ui-tour.gif" width="840" alt="界面总览（总览 → 环境检查 → GPU 管理 → 框架管理 → 模型管理 → 设置）"/>
 
-环境信息卡片（系统 / CPU / 多分区磁盘 / Python / CUDA / 驱动 / Docker）；GPU 利用率、显存、温度、功耗实时曲线与 GPU 进程列表；推理服务 `/metrics` 指标抓取 + 折线图（自动勾选关键指标，支持手动勾选与自动刷新）。
-
-<img src="screenshoot/ScreenShot_2026-09-05_174341_871.png" width="840" alt="总览监控"/>
-
-### 环境检查
-
-24 项体检（基础工具 / GPU 驱动 / Docker 与 GPU 运行时 / 模型工具 / 推理引擎 / CUDA 库），缺失项一键修复（pip / apt / Docker 安装授权 / 跳转拉取镜像）；V100 等 sm70 卡型兼容性提示；驱动等手动项提供复制命令。
-
-<img src="screenshoot/ScreenShot_2026-09-05_174411_000.png" width="840" alt="环境检查"/>
-
-### GPU 管理
-
-每卡概览（型号 / 序列号 / VBIOS / PCIe / ECC / 降频原因，兼容新旧驱动位掩码格式）；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关与功耗上限调整（sudo 密码流）；GPU 拓扑展示。
-
-<img src="screenshoot/ScreenShot_2026-09-05_174436_238.png" width="840" alt="GPU 管理"/>
-
-### 框架管理
-
-Docker 镜像一键添加 / 拉取，「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验后自动拉取并持久保存）；vLLM / 1Cat-vLLM / SGLang / llama.cpp 原生框架检测；实例参数动态表单 + 启动命令实时预览；运行日志抽屉（初始 500 行，滚动到顶自动加载更早内容）。
-
-<img src="screenshoot/ScreenShot_2026-09-05_174454_409.png" width="840" alt="框架管理"/>
-
-### 模型管理
-
-ModelScope / Hugging Face 搜索与服务器端流式下载；本地模型扫描使用官方 `gguf` / `safetensors` 包解析头部（架构 / 参数量 / 上下文 / 量化，分片组聚合），带持久化解析缓存——目录未变化时刷新秒级返回。
-
-<img src="screenshoot/ScreenShot_2026-09-05_174519_705.png" width="840" alt="模型管理"/>
-
-### 设置
-
-默认下载来源、模型目录、HF 镜像端点 + Token、轮询间隔、深色主题；下载代理（启用后模型下载 / pip / git clone 走代理，Docker 拉镜像自动配置 daemon）。
-
-<img src="screenshoot/ScreenShot_2026-09-05_174529_929.png" width="840" alt="设置"/>
+- **总览监控**：环境信息卡片（系统 / CPU / 多分区磁盘 / Python / CUDA / 驱动 / Docker）；GPU 利用率、显存、温度、功耗实时曲线与 GPU 进程列表；推理服务 `/metrics` 指标抓取 + 折线图（自动勾选关键指标，支持手动勾选与自动刷新）。
+- **环境检查**：24 项体检（基础工具 / GPU 驱动 / Docker 与 GPU 运行时 / 模型工具 / 推理引擎 / CUDA 库），缺失项一键修复（pip / apt / Docker 安装授权 / 跳转拉取镜像）；V100 等 sm70 卡型兼容性提示；驱动等手动项提供复制命令。
+- **GPU 管理**：每卡概览（型号 / 序列号 / VBIOS / PCIe / ECC / 降频原因，兼容新旧驱动位掩码格式）；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关与功耗上限调整（sudo 密码流）；GPU 拓扑展示。
+- **框架管理**：Docker 镜像一键添加 / 拉取，「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验后自动拉取并持久保存）；vLLM / 1Cat-vLLM / SGLang / llama.cpp 原生框架检测；实例参数动态表单 + 启动命令实时预览；运行日志抽屉（初始 500 行，滚动到顶自动加载更早内容）。
+- **模型管理**：ModelScope / Hugging Face 搜索与服务器端流式下载；本地模型扫描使用官方 `gguf` / `safetensors` 包解析头部（架构 / 参数量 / 上下文 / 量化，分片组聚合），带持久化解析缓存——目录未变化时刷新秒级返回。
+- **设置**：默认下载来源、模型目录、HF 镜像端点 + Token、轮询间隔、深色主题；下载代理（启用后模型下载 / pip / git clone 走代理，Docker 拉镜像自动配置 daemon）。
 
 ## 快速上手
 

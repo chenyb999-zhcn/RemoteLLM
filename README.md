@@ -29,41 +29,14 @@ A Windows desktop app built with Rust + Tauri v2 that manages LLM inference envi
 
 > Note: the UI is available in Chinese and English — switch in Settings.
 
-### Dashboard
+<img src="screenshoot/ui-tour.gif" width="840" alt="UI tour (Dashboard → Environment Check → GPU Management → Framework Management → Model Management → Settings)"/>
 
-Environment info cards (OS / CPU / multi-partition disks / Python / CUDA / driver / Docker); real-time curves for GPU utilization, memory, temperature and power, plus a GPU process list; `/metrics` scraping from inference services with line charts (key metrics auto-selected, manual selection and auto-refresh supported).
-
-<img src="screenshoot/ScreenShot_2026-09-05_174341_871.png" width="840" alt="Dashboard"/>
-
-### Environment Check
-
-A 24-item health check (essential tools / GPU driver / Docker & GPU runtime / model tooling / inference engines / CUDA libraries) with one-click fixes (pip / apt / Docker install & authorization / jump to image pull); sm70 compatibility hints for cards like the V100; copyable commands for manual items such as driver installation.
-
-<img src="screenshoot/ScreenShot_2026-09-05_174411_000.png" width="840" alt="Environment Check"/>
-
-### GPU Management
-
-Per-GPU overview (model / serial / VBIOS / PCIe / ECC / throttle reasons, compatible with both legacy and modern driver bitmask formats); GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display.
-
-<img src="screenshoot/ScreenShot_2026-09-05_174436_238.png" width="840" alt="GPU Management"/>
-
-### Framework Management
-
-One-click add / pull of Docker images; "Add Framework Image" supports images from any registry (framework name + image address, validated before automatic pull and persisted); native framework detection for vLLM / 1Cat-vLLM / SGLang / llama.cpp; dynamic instance parameter forms with live command preview; run-log drawer (last 500 lines initially, older lines load on scroll-to-top).
-
-<img src="screenshoot/ScreenShot_2026-09-05_174454_409.png" width="840" alt="Framework Management"/>
-
-### Model Management
-
-ModelScope / Hugging Face search with server-side streaming downloads; local model scanning parses headers with the official `gguf` / `safetensors` packages (architecture / parameter count / context size / quantization, split-shard aggregation) and a persistent metadata cache — refreshing an unchanged directory returns in seconds.
-
-<img src="screenshoot/ScreenShot_2026-09-05_174519_705.png" width="840" alt="Model Management"/>
-
-### Settings
-
-Default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; Docker daemon proxy is configured automatically for image pulls).
-
-<img src="screenshoot/ScreenShot_2026-09-05_174529_929.png" width="840" alt="Settings"/>
+- **Dashboard**: environment info cards (OS / CPU / multi-partition disks / Python / CUDA / driver / Docker); real-time curves for GPU utilization, memory, temperature and power, plus a GPU process list; `/metrics` scraping from inference services with line charts (key metrics auto-selected, manual selection and auto-refresh supported).
+- **Environment check**: a 24-item health check (essential tools / GPU driver / Docker & GPU runtime / model tooling / inference engines / CUDA libraries) with one-click fixes (pip / apt / Docker install & authorization / jump to image pull); sm70 compatibility hints for cards like the V100; copyable commands for manual items such as driver installation.
+- **GPU management**: per-GPU overview (model / serial / VBIOS / PCIe / ECC / throttle reasons, compatible with both legacy and modern driver bitmask formats); GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display.
+- **Framework management**: one-click add / pull of Docker images; "Add Framework Image" supports images from any registry (framework name + image address, validated before automatic pull and persisted); native framework detection for vLLM / 1Cat-vLLM / SGLang / llama.cpp; dynamic instance parameter forms with live command preview; run-log drawer (last 500 lines initially, older lines load on scroll-to-top).
+- **Model management**: ModelScope / Hugging Face search with server-side streaming downloads; local model scanning parses headers with the official `gguf` / `safetensors` packages (architecture / parameter count / context size / quantization, split-shard aggregation) and a persistent metadata cache — refreshing an unchanged directory returns in seconds.
+- **Settings**: default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; Docker daemon proxy is configured automatically for image pulls).
 
 ## Quick Start
 
