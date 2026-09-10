@@ -21,9 +21,11 @@ import {
   type DataTableColumns,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
+import { useI18n } from "vue-i18n";
 import { useServerStore } from "../stores/server";
 import { useSettingsStore } from "../stores/settings";
 import { api, fmtBytes, onTaskStream } from "../lib/api";
+import { i18n } from "../i18n";
 import type { LocalModel, ModelInfo, ParserLibsStatus, RepoFile } from "../lib/types";
 import { useClipboard } from "@vueuse/core";
 import StreamLog from "../components/StreamLog.vue";
@@ -34,6 +36,7 @@ const settings = useSettingsStore();
 const message = useMessage();
 const dialog = useDialog();
 const { copy } = useClipboard();
+const { t } = useI18n();
 
 type Source = "modelscope" | "huggingface";
 const activeTab = ref<Source>("modelscope");
@@ -88,11 +91,11 @@ const checkedSize = computed(
       .reduce((s, f) => s + f.size, 0),
 );
 
-const fileColumns: DataTableColumns<RepoFile> = [
+const fileColumns = computed<DataTableColumns<RepoFile>>(() => [
   { type: "selection" },
-  { title: "文件", key: "path", ellipsis: { tooltip: true } },
-  { title: "大小", key: "size", width: 110, render: (f) => fmtBytes(f.size) },
-];
+  { title: t("common.name"), key: "path", ellipsis: { tooltip: true } },
+  { title: t("common.size"), key: "size", width: 110, render: (f) => fmtBytes(f.size) },
+]);
 
 function fileRowKey(f: RepoFile) {
   return f.path;
@@ -128,15 +131,15 @@ async function openDownload(m: ModelInfo) {
       .filter((f) => f.path.toLowerCase().endsWith(".gguf"))
       .map((f) => f.path);
     if (repoFiles.value.length && !checkedFiles.value.length) {
-      message.info("该仓库没有 GGUF 文件，请手动勾选需要的文件");
+      message.info(t("models.noGguf"));
     }
   } catch (e: any) {
     fileShow.value = false;
     dialog.warning({
-      title: "获取文件列表失败",
-      content: `${e?.message ?? JSON.stringify(e)}\n\n仍可直接下载整个仓库。`,
-      positiveText: "下载整个仓库",
-      negativeText: "取消",
+      title: t("models.fileListFailed"),
+      content: `${e?.message ?? JSON.stringify(e)}\n\n${t("models.fileListFailedHint")}`,
+      positiveText: t("models.downloadWhole"),
+      negativeText: t("common.cancel"),
       onPositiveClick: () => openDestModal(m, []),
     });
   } finally {
@@ -158,7 +161,7 @@ const cancelTask = ref<null | (() => Promise<void>)>(null);
 
 async function onSearch() {
   if (!query.value.trim() && activeTab.value === "huggingface") {
-    message.warning("请输入模型名关键词");
+    message.warning(t("models.needKeyword"));
     return;
   }
   searching.value = true;
@@ -167,7 +170,7 @@ async function onSearch() {
     results.value = await api.searchModels(activeTab.value, query.value, limit.value);
     searched.value = true;
   } catch (e: any) {
-    message.error(`搜索失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("models.searchFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
     searching.value = false;
   }
@@ -180,7 +183,7 @@ async function refreshLocal() {
   try {
     localModels.value = await api.listLocalModels(id);
   } catch (e: any) {
-    message.error(`获取本地模型失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("models.localFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
     localLoading.value = false;
   }
@@ -221,9 +224,9 @@ async function onDownloadConfirm() {
         dlDone.value = d.exitCode;
       },
     );
-    message.info("下载任务已启动，日志实时显示在下方");
+    message.info(t("models.dlStarted"));
   } catch (e: any) {
-    message.error(`启动下载失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("models.dlStartFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -251,7 +254,7 @@ async function askInstall(tool: string, _label: string) {
     installTool.value = tool;
     installShow.value = true;
   } catch (e: any) {
-    message.error(`获取安装命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.getCmdFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -274,7 +277,7 @@ async function onInstallConfirm() {
       },
     );
   } catch (e: any) {
-    message.error(`启动安装失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.startInstallFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -291,15 +294,15 @@ function closeInstall() {
 function doDelete(m: LocalModel) {
   const what =
     m.kind === "gguf-split"
-      ? `整组分片文件（${m.note ?? ""}）`
+      ? t("models.deleteWhatSplit", { note: m.note ?? "" })
       : m.kind === "hf" || m.kind === "dir"
-        ? "整个目录"
-        : "该文件";
+        ? t("models.deleteWhatDir")
+        : t("models.deleteWhatFile");
   dialog.error({
-    title: "删除模型",
-    content: `将删除 ${m.path}\n（${what}），确认删除？`,
-    positiveText: "删除",
-    negativeText: "取消",
+    title: t("models.deleteTitle"),
+    content: t("models.deleteContent", { path: m.path, what }),
+    positiveText: t("common.delete"),
+    negativeText: t("common.cancel"),
     style: "color: #e88080",
     onPositiveClick: async () => {
       const id = current.value?.id;
@@ -309,7 +312,7 @@ function doDelete(m: LocalModel) {
         message.success(r);
         refreshLocal();
       } catch (e: any) {
-        message.error(`删除失败: ${e?.message ?? JSON.stringify(e)}`);
+        message.error(t("models.deleteFailed", { msg: e?.message ?? JSON.stringify(e) }));
       }
     },
   });
@@ -317,93 +320,91 @@ function doDelete(m: LocalModel) {
 
 function copyPath(m: LocalModel) {
   copy(m.path);
-  message.success("路径已复制");
+  message.success(t("models.pathCopied"));
 }
 
-const KIND_LABEL: Record<string, string> = {
-  gguf: "GGUF",
-  "gguf-split": "GGUF 分片",
-  safetensors: "safetensors",
-  hf: "HF 目录",
-  dir: "目录",
-};
+function kindLabel(kind: string): string {
+  const key = `models.kind_${kind}`;
+  return i18n.global.te(key) ? t(key) : kind;
+}
 
-const resultColumns: DataTableColumns<ModelInfo> = [
-  { title: "模型", key: "id", ellipsis: { tooltip: true } },
+const resultColumns = computed<DataTableColumns<ModelInfo>>(() => [
+  { title: t("models.colModel"), key: "id", ellipsis: { tooltip: true } },
   {
-    title: "下载量",
+    title: t("models.colDownloads"),
     key: "downloads",
     width: 100,
-    render: (m) => (m.downloads != null ? m.downloads.toLocaleString() : "-"),
+    render: (m) =>
+      m.downloads != null ? m.downloads.toLocaleString(i18n.global.locale.value) : "-",
   },
   {
-    title: "收藏",
+    title: t("models.colLikes"),
     key: "likes",
     width: 90,
-    render: (m) => (m.likes != null ? m.likes.toLocaleString() : "-"),
+    render: (m) => (m.likes != null ? m.likes.toLocaleString(i18n.global.locale.value) : "-"),
   },
   {
-    title: "描述",
+    title: t("models.colDesc"),
     key: "description",
     ellipsis: { tooltip: true },
     render: (m) => m.description ?? "-",
   },
   {
-    title: "操作",
+    title: t("common.actions"),
     key: "actions",
     width: 100,
     render: (m) =>
       h(
         NButton,
         { size: "small", type: "primary", onClick: () => openDownload(m) },
-        { default: () => "下载" },
+        { default: () => t("models.download") },
       ),
   },
-];
+]);
 
-const localColumns: DataTableColumns<LocalModel> = [
+const localColumns = computed<DataTableColumns<LocalModel>>(() => [
   {
-    title: "名称",
+    title: t("common.name"),
     key: "name",
     minWidth: 180,
     ellipsis: { tooltip: true },
     render: (m) => (m.kind === "gguf-split" && m.note ? `${m.name}（${m.note}）` : m.name),
   },
   {
-    title: "类型",
+    title: t("common.type"),
     key: "kind",
     width: 100,
-    render: (m) => h(NTag, { size: "small" }, { default: () => KIND_LABEL[m.kind] ?? m.kind }),
+    render: (m) => h(NTag, { size: "small" }, { default: () => kindLabel(m.kind) }),
   },
   {
-    title: "大小",
+    title: t("common.size"),
     key: "sizeBytes",
     width: 100,
     render: (m) => (m.sizeBytes != null ? fmtBytes(m.sizeBytes) : "-"),
   },
-  { title: "架构", key: "arch", width: 130, ellipsis: { tooltip: true }, render: (m) => m.arch ?? "-" },
-  { title: "量化", key: "quant", width: 90, render: (m) => m.quant ?? "-" },
-  { title: "参数", key: "params", width: 80, render: (m) => m.params ?? "-" },
+  { title: t("models.colArch"), key: "arch", width: 130, ellipsis: { tooltip: true }, render: (m) => m.arch ?? "-" },
+  { title: t("models.colQuant"), key: "quant", width: 90, render: (m) => m.quant ?? "-" },
+  { title: t("models.colParams"), key: "params", width: 80, render: (m) => m.params ?? "-" },
   {
-    title: "上下文",
+    title: t("models.colCtx"),
     key: "ctx",
     width: 90,
-    render: (m) => (m.ctx != null ? m.ctx.toLocaleString() : "-"),
+    render: (m) => (m.ctx != null ? m.ctx.toLocaleString(i18n.global.locale.value) : "-"),
   },
-  { title: "相对路径", key: "rel", minWidth: 140, ellipsis: { tooltip: true } },
+  { title: t("models.colRel"), key: "rel", minWidth: 140, ellipsis: { tooltip: true } },
   {
-    title: "操作",
+    title: t("common.actions"),
     key: "actions",
     width: 180,
     render: (m) =>
       h(NSpace, { size: 6 }, {
         default: () => [
-          h(NButton, { size: "small", onClick: () => copyPath(m) }, { default: () => "复制路径" }),
-          h(NButton, { size: "small", type: "error", onClick: () => doDelete(m) }, { default: () => "删除" }),
+          h(NButton, { size: "small", onClick: () => copyPath(m) }, { default: () => t("models.copyPath") }),
+          h(NButton, { size: "small", type: "error", onClick: () => doDelete(m) }, { default: () => t("common.delete") }),
         ],
       }),
   },
-];
+]);
 
 onMounted(() => {
   refreshLocal();
@@ -421,31 +422,31 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <n-tabs v-model:value="activeTab" type="line" animated>
-      <n-tab name="modelscope" tab="ModelScope 搜索" />
-      <n-tab name="huggingface" tab="Hugging Face 搜索" />
+      <n-tab name="modelscope" :tab="t('models.tabMs')" />
+      <n-tab name="huggingface" :tab="t('models.tabHf')" />
     </n-tabs>
 
-    <n-card size="small" title="搜索模型" style="margin-top: 16px">
+    <n-card size="small" :title="t('models.searchCard')" style="margin-top: 16px">
       <template #header-extra>
         <n-space size="small">
           <n-button size="tiny" @click="askInstall('modelscope', 'modelscope CLI (pip)')">
-            安装 modelscope
+            {{ t("init.fixModelscope") }}
           </n-button>
           <n-button size="tiny" @click="askInstall('huggingface', 'huggingface-cli (pip)')">
-            安装 hf-cli
+            {{ t("init.fixHf") }}
           </n-button>
         </n-space>
       </template>
       <n-space align="center">
         <n-input
           v-model:value="query"
-          :placeholder="activeTab === 'modelscope' ? '完整模型 ID 精确查，如 Qwen/Qwen3-8B；关键词或留空浏览热门' : '输入模型名，如 Qwen/Qwen2.5-7B-Instruct'"
+          :placeholder="activeTab === 'modelscope' ? t('models.searchPhMs') : t('models.searchPhHf')"
           clearable
           style="width: 380px"
           @keyup.enter="onSearch"
         />
         <n-input-number v-model:value="limit" :min="1" :max="50" style="width: 100px" />
-        <n-button type="primary" :loading="searching" @click="onSearch">搜索</n-button>
+        <n-button type="primary" :loading="searching" @click="onSearch">{{ t("common.search") }}</n-button>
       </n-space>
 
       <n-data-table
@@ -456,24 +457,24 @@ onBeforeUnmount(() => {
         size="small"
         style="margin-top: 12px"
       />
-      <n-empty v-else-if="!searching" description="搜索后在这里选择要下载的模型" style="padding: 24px 0" />
+      <n-empty v-else-if="!searching" :description="t('models.searchEmpty')" style="padding: 24px 0" />
     </n-card>
 
-    <n-card size="small" title="本地模型" style="margin-top: 16px">
+    <n-card size="small" :title="t('models.localCard')" style="margin-top: 16px">
       <template #header-extra>
         <n-space align="center">
           <n-tag size="small">{{ modelsDirLabel }}</n-tag>
           <n-tag v-if="parserLibs" size="small" :type="parserLibs.gguf && parserLibs.safetensors ? 'success' : 'warning'">
-            解析库 {{ parserLibs.gguf && parserLibs.safetensors ? "已装" : "未装" }}
+            {{ t("models.parserTag", { state: parserLibs.gguf && parserLibs.safetensors ? t("models.parserInstalled") : t("models.parserMissing") }) }}
           </n-tag>
           <n-button
             v-if="parserLibs && !(parserLibs.gguf && parserLibs.safetensors)"
             size="small"
-            @click="askInstall('parser-libs', '解析库 gguf+safetensors (pip)')"
+            @click="askInstall('parser-libs', t('models.parserLibsLabel'))"
           >
-            安装解析库
+            {{ t("init.fixParser") }}
           </n-button>
-          <n-button size="small" :loading="localLoading" @click="refreshLocal">刷新</n-button>
+          <n-button size="small" :loading="localLoading" @click="refreshLocal">{{ t("common.refresh") }}</n-button>
         </n-space>
       </template>
       <n-data-table
@@ -483,22 +484,22 @@ onBeforeUnmount(() => {
         size="small"
         :loading="localLoading"
       />
-      <n-empty v-if="!localModels.length && !localLoading" description="服务器 models 目录还没有模型" style="padding: 24px 0" />
+      <n-empty v-if="!localModels.length && !localLoading" :description="t('models.localEmpty')" style="padding: 24px 0" />
     </n-card>
 
     <!-- 选择要下载的文件 -->
-    <n-modal v-model:show="fileShow" preset="card" title="选择要下载的文件" style="width: 780px">
+    <n-modal v-model:show="fileShow" preset="card" :title="t('models.fileModalTitle')" style="width: 780px">
       <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px">
         <n-tag size="small" type="info">{{ fileModel?.id }}</n-tag>
         <n-input
           v-model:value="fileFilter"
-          placeholder="筛选文件，如 gguf"
+          :placeholder="t('models.fileFilterPh')"
           clearable
           size="small"
           style="width: 200px"
         />
         <n-text depth="3" style="font-size: 12px">
-          已选 {{ checkedFiles.length }} 个文件，约 {{ fmtBytes(checkedSize) }}
+          {{ t("models.selectedSummary", { n: checkedFiles.length, size: fmtBytes(checkedSize) }) }}
         </n-text>
       </div>
       <n-spin :show="fileLoading" size="small">
@@ -516,54 +517,54 @@ onBeforeUnmount(() => {
       </n-spin>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="fileShow = false">取消</n-button>
+          <n-button @click="fileShow = false">{{ t("common.cancel") }}</n-button>
           <n-button type="primary" :disabled="!checkedFiles.length" @click="onFilesNext">
-            下一步
+            {{ t("models.next") }}
           </n-button>
         </n-space>
       </template>
     </n-modal>
 
     <!-- 下载确认 -->
-    <n-modal v-model:show="dlShow" preset="card" title="下载模型到服务器" style="width: 560px">
+    <n-modal v-model:show="dlShow" preset="card" :title="t('models.dlModalTitle')" style="width: 560px">
       <n-form label-placement="left" label-width="90">
-        <n-form-item label="模型 ID">
+        <n-form-item :label="t('models.modelId')">
           <n-input :value="dlForm.modelId" readonly />
         </n-form-item>
-        <n-form-item label="来源">
+        <n-form-item :label="t('models.source')">
           <n-tag size="small">{{ dlForm.source === "modelscope" ? "ModelScope" : "Hugging Face" }}</n-tag>
         </n-form-item>
-        <n-form-item label="下载文件">
+        <n-form-item :label="t('models.dlFiles')">
           <div style="font-size: 13px">
             <template v-if="dlForm.files.length">
-              共 {{ dlForm.files.length }} 个文件，约 {{ fmtBytes(dlTotalSize) }}
+              {{ t("models.filesSummary", { n: dlForm.files.length, size: fmtBytes(dlTotalSize) }) }}
               <div v-if="dlForm.files.length <= 5" style="color: #999; font-size: 12px">
                 <div v-for="f in dlForm.files" :key="f">{{ f }}</div>
               </div>
             </template>
-            <span v-else style="color: #999">整个仓库（全部文件）</span>
+            <span v-else style="color: #999">{{ t("models.wholeRepo") }}</span>
           </div>
         </n-form-item>
-        <n-form-item label="保存目录">
-          <n-input v-model:value="dlForm.dest" placeholder="留空=默认 models/模型名" />
+        <n-form-item :label="t('models.dest')">
+          <n-input v-model:value="dlForm.dest" :placeholder="t('models.destPh')" />
         </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="dlShow = false">取消</n-button>
-          <n-button type="primary" @click="onDownloadConfirm">开始下载</n-button>
+          <n-button @click="dlShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="onDownloadConfirm">{{ t("models.startDownload") }}</n-button>
         </n-space>
       </template>
     </n-modal>
 
     <!-- 安装确认 -->
-    <n-modal v-model:show="installShow" preset="card" title="安装下载工具" style="width: 620px">
-      <p style="margin-top: 0; color: #999; font-size: 13px">将在服务器执行：</p>
+    <n-modal v-model:show="installShow" preset="card" :title="t('app.toolInstallTitle')" style="width: 620px">
+      <p style="margin-top: 0; color: #999; font-size: 13px">{{ t("gpu.execHint") }}</p>
       <StreamLog :text="installScript" max-height="120px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="installShow = false">取消</n-button>
-          <n-button type="primary" @click="onInstallConfirm">开始安装</n-button>
+          <n-button @click="installShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="onInstallConfirm">{{ t("init.startInstall") }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -572,7 +573,7 @@ onBeforeUnmount(() => {
     <n-modal
       :show="installStreamShow"
       preset="card"
-      title="安装日志"
+      :title="t('init.installLog')"
       style="width: 720px"
       :mask-closable="false"
       @close="closeInstall"
@@ -580,10 +581,10 @@ onBeforeUnmount(() => {
       <StreamLog :text="installStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="installDone != null" :type="installDone === 0 ? 'success' : 'error'">
-          退出码 {{ installDone }}
+          {{ t("docker.exitCode", { code: installDone }) }}
         </n-tag>
         <n-button v-if="installDone != null" type="primary" @click="closeInstall">
-          {{ installDone === 0 ? "完成" : "关闭" }}
+          {{ installDone === 0 ? t("docker.done") : t("common.close") }}
         </n-button>
       </n-space>
     </n-modal>
@@ -592,7 +593,7 @@ onBeforeUnmount(() => {
     <n-modal
       :show="dlStreamShow"
       preset="card"
-      title="下载日志"
+      :title="t('models.dlLogTitle')"
       style="width: 720px"
       :mask-closable="false"
       @close="closeStream"
@@ -600,10 +601,10 @@ onBeforeUnmount(() => {
       <StreamLog :text="dlStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="dlDone != null" :type="dlDone === 0 ? 'success' : 'error'">
-          退出码 {{ dlDone }}
+          {{ t("docker.exitCode", { code: dlDone }) }}
         </n-tag>
         <n-button v-if="dlDone != null" type="primary" @click="closeStream">
-          {{ dlDone === 0 ? "完成" : "关闭" }}
+          {{ dlDone === 0 ? t("docker.done") : t("common.close") }}
         </n-button>
       </n-space>
     </n-modal>

@@ -38,15 +38,17 @@ import {
   type DataTableColumns,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
+import { useI18n } from "vue-i18n";
 import { useServerStore } from "../stores/server";
 import { useInstanceStore } from "../stores/instance";
 import { useSettingsStore } from "../stores/settings";
 import { api, onTaskStream } from "../lib/api";
+import { i18n } from "../i18n";
 import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
 import type { DockerStatus, InstanceConfig, LocalImage } from "../lib/types";
 
-import { FW_META, type ParamDef } from "../lib/fwParams";
+import { FW_META, type ParamDef, type FwTab } from "../lib/fwParams";
 
 const serverStore = useServerStore();
 const settingsStore = useSettingsStore();
@@ -70,6 +72,36 @@ const {
 } = storeToRefs(store);
 const message = useMessage();
 const dialog = useDialog();
+const { t } = useI18n();
+
+// ---------- 双语取值（fwParams 数据表用 labelEn/descEn/placeholderEn 双字段） ----------
+const lang = computed(() => i18n.global.locale.value);
+function fwLabel(fw: string): string {
+  const m = FW_META[fw];
+  return m ? (lang.value === "en" ? (m.labelEn ?? m.label) : m.label) : fw;
+}
+function fwDesc(fw: string): string {
+  const m = FW_META[fw];
+  return m ? (lang.value === "en" ? (m.descEn ?? m.desc) : m.desc) : "";
+}
+function pLabel(p: ParamDef): string {
+  return lang.value === "en" ? (p.labelEn ?? p.label) : p.label;
+}
+function pDesc(p: ParamDef): string {
+  return lang.value === "en" ? (p.descEn ?? p.desc ?? "") : (p.desc ?? "");
+}
+function pPlaceholder(p: ParamDef): string {
+  return lang.value === "en"
+    ? (p.placeholderEn ?? p.placeholder ?? "")
+    : (p.placeholder ?? "");
+}
+function tabLabel(tab: FwTab): string {
+  return lang.value === "en" ? (tab.labelEn ?? tab.label) : tab.label;
+}
+function actionText(a: string): string {
+  const key = `fw.act_${a}`;
+  return i18n.global.te(key) ? t(key) : a;
+}
 
 let statusTimer: number | null = null;
 let logTimer: number | null = null;
@@ -167,7 +199,9 @@ function onFrameworkChange() {
   if (isCustomFw.value) {
     // 自定义框架：Docker 模式 + 启动命令模板（用户可自行修改）
     form.mode = "docker";
-    form.params = { customCmd: `--model ${form.modelPath || "<模型路径>"} --port ${form.port}` };
+    form.params = {
+      customCmd: `--model ${form.modelPath || t("fw.modelPathToken")} --port ${form.port}`,
+    };
   } else {
     form.params = defaultParams(form.framework);
   }
@@ -282,20 +316,20 @@ watch(
 
 async function onSubmit() {
   if (!form.name.trim()) {
-    message.warning("请输入实例名称");
+    message.warning(t("fw.reqName"));
     return;
   }
   if (!form.modelPath.trim()) {
-    message.warning("请输入模型路径");
+    message.warning(t("fw.reqModelPath"));
     return;
   }
   const isDocker = isCustomFw.value || form.mode === "docker";
   if (isDocker && !form.dockerImage.trim()) {
-    message.warning("请输入镜像地址");
+    message.warning(t("fw.reqImage"));
     return;
   }
   if (isCustomFw.value && !String(form.params.customCmd ?? "").trim()) {
-    message.warning("自定义框架需填写启动命令（镜像后的参数）");
+    message.warning(t("fw.reqCustomCmd"));
     return;
   }
   const cfg: InstanceConfig = {
@@ -306,7 +340,7 @@ async function onSubmit() {
   };
   await store.save(cfg);
   showModal.value = false;
-  message.success("实例已保存");
+  message.success(t("fw.saved"));
 }
 
 // ---------- 操作 ----------
@@ -315,7 +349,7 @@ async function doStart(inst: InstanceConfig) {
     const r = await store.start(inst.id);
     message.success(r);
   } catch (e: any) {
-    message.error(`启动失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("common.startFailedMsg", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -324,19 +358,19 @@ async function doStop(inst: InstanceConfig) {
     const r = await store.stop(inst.id);
     message.info(r);
   } catch (e: any) {
-    message.error(`停止失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("fw.stopFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
 function doDelete(inst: InstanceConfig) {
   dialog.warning({
-    title: "删除实例",
-    content: `确认删除实例「${inst.name}」？（只删除配置，不停止已运行的进程）`,
-    positiveText: "删除",
-    negativeText: "取消",
+    title: t("fw.deleteTitle"),
+    content: t("fw.deleteContent", { name: inst.name }),
+    positiveText: t("common.delete"),
+    negativeText: t("common.cancel"),
     onPositiveClick: async () => {
       await store.remove(inst.id);
-      message.success("已删除");
+      message.success(t("fw.deleted"));
     },
   });
 }
@@ -350,44 +384,44 @@ async function doOpenLogs(inst: InstanceConfig) {
 }
 
 const columns = computed<DataTableColumns<InstanceConfig>>(() => [
-  { title: "名称", key: "name", width: 150 },
+  { title: t("common.name"), key: "name", width: 150 },
   {
-    title: "框架",
+    title: t("fw.colFw"),
     key: "framework",
     width: 120,
-    render: (i) => h(NTag, { size: "small" }, { default: () => FW_META[i.framework]?.label ?? i.framework }),
+    render: (i) => h(NTag, { size: "small" }, { default: () => fwLabel(i.framework) }),
   },
   {
-    title: "模式",
+    title: t("fw.colMode"),
     key: "mode",
     width: 80,
-    render: (i) => (i.mode === "docker" ? "Docker" : "原生"),
+    render: (i) => (i.mode === "docker" ? "Docker" : t("fw.modeNativeVal")),
   },
-  { title: "模型", key: "modelPath", ellipsis: { tooltip: true } },
-  { title: "端口", key: "port", width: 80 },
+  { title: t("fw.colModel"), key: "modelPath", ellipsis: { tooltip: true } },
+  { title: t("fw.colPort"), key: "port", width: 80 },
   {
-    title: "状态",
+    title: t("fw.colStatus"),
     key: "status",
     width: 170,
     render: (i) => {
       const s = statuses.value[i.id];
-      if (!s) return h(NTag, { size: "small" }, { default: () => "未知" });
+      if (!s) return h(NTag, { size: "small" }, { default: () => t("common.unknown") });
       if (s.running) {
         const ok = s.healthCode == null || s.healthCode < 500;
         return h(NSpace, { size: 4 }, {
           default: () => [
-            h(NTag, { size: "small", type: "success" }, { default: () => "运行中" }),
+            h(NTag, { size: "small", type: "success" }, { default: () => t("common.running") }),
             h(NTag, { size: "small", type: ok ? "default" : "warning" }, {
               default: () => `PID ${s.pid ?? "?"} · HTTP ${s.healthCode ?? "-"}`,
             }),
           ],
         });
       }
-      return h(NTag, { size: "small", type: "error" }, { default: () => "已停止" });
+      return h(NTag, { size: "small", type: "error" }, { default: () => t("common.stopped") });
     },
   },
   {
-    title: "操作",
+    title: t("common.actions"),
     key: "actions",
     width: 260,
     render: (i) => {
@@ -403,7 +437,7 @@ const columns = computed<DataTableColumns<InstanceConfig>>(() => [
               loading: starting.value[i.id],
               onClick: () => doStart(i),
             },
-            { default: () => "启动" },
+            { default: () => t("common.start") },
           ),
           h(
             NButton,
@@ -414,11 +448,11 @@ const columns = computed<DataTableColumns<InstanceConfig>>(() => [
               loading: stopping.value[i.id],
               onClick: () => doStop(i),
             },
-            { default: () => "停止" },
+            { default: () => t("common.stop") },
           ),
-          h(NButton, { size: "small", onClick: () => openEdit(i) }, { default: () => "参数" }),
-          h(NButton, { size: "small", onClick: () => doOpenLogs(i) }, { default: () => "日志" }),
-          h(NButton, { size: "small", type: "error", onClick: () => doDelete(i) }, { default: () => "删除" }),
+          h(NButton, { size: "small", onClick: () => openEdit(i) }, { default: () => t("fw.btnParams") }),
+          h(NButton, { size: "small", onClick: () => doOpenLogs(i) }, { default: () => t("fw.btnLogs") }),
+          h(NButton, { size: "small", type: "error", onClick: () => doDelete(i) }, { default: () => t("common.delete") }),
         ],
       });
     },
@@ -430,8 +464,8 @@ const detectionCards = computed(() =>
     const d = detections.value.find((x) => x.framework === fw);
     return {
       fw,
-      label: FW_META[fw].label,
-      desc: FW_META[fw].desc,
+      label: fwLabel(fw),
+      desc: fwDesc(fw),
       installed: d?.installed ?? false,
       version: d?.version ?? null,
       note: d?.note ?? null,
@@ -457,12 +491,6 @@ const installStream = ref("");
 const installDone = ref<number | null>(null);
 const cancelInstall = ref<null | (() => Promise<void>)>(null);
 
-const ACTION_TEXT: Record<string, string> = {
-  install: "安装",
-  upgrade: "升级",
-  uninstall: "卸载",
-};
-
 async function askInstall(tool: string, label: string, action: "install" | "upgrade") {
   const pid = current.value?.id;
   if (!pid) return;
@@ -473,7 +501,9 @@ async function askInstall(tool: string, label: string, action: "install" | "upgr
     installLabel.value = label;
     installShow.value = true;
   } catch (e: any) {
-    message.error(`获取${ACTION_TEXT[action]}命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(
+      t("fw.getCmdFailed", { action: actionText(action), msg: e?.message ?? JSON.stringify(e) }),
+    );
   }
 }
 
@@ -488,7 +518,9 @@ async function askUninstall(fw: string, label: string) {
     installLabel.value = label;
     installShow.value = true;
   } catch (e: any) {
-    message.error(`获取卸载命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(
+      t("fw.getCmdFailed", { action: actionText("uninstall"), msg: e?.message ?? JSON.stringify(e) }),
+    );
   }
 }
 
@@ -511,7 +543,12 @@ async function onInstallConfirm() {
       },
     );
   } catch (e: any) {
-    message.error(`启动${ACTION_TEXT[installAction.value]}失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(
+      t("fw.startActionFailed", {
+        action: actionText(installAction.value),
+        msg: e?.message ?? JSON.stringify(e),
+      }),
+    );
   }
 }
 
@@ -564,10 +601,10 @@ const canUseDocker = computed(() => !!dockerStatus.value?.usable);
 const gpuTagText = computed(() => {
   const s = dockerStatus.value;
   if (!s?.installed || !s.usable) return "";
-  if (s.gpuRuntime) return "GPU 运行时就绪";
-  if (s.gpuRuntimeDetail === "ctk") return "GPU 工具链已装，docker 未配置";
-  if (s.gpuRuntimeDetail === "bin") return "GPU 运行时二进制存在，未注册";
-  return "GPU 运行时未安装";
+  if (s.gpuRuntime) return t("fw.gpuReady");
+  if (s.gpuRuntimeDetail === "ctk") return t("fw.gpuCtk");
+  if (s.gpuRuntimeDetail === "bin") return t("fw.gpuBin");
+  return t("fw.gpuMissing");
 });
 
 const gpuTesting = ref(false);
@@ -585,7 +622,7 @@ async function doGpuTest() {
     gpuTestOk.value = !out.includes("NO_NVIDIA_IMAGE") && /EXIT=0\b/.test(out);
     gpuTestShow.value = true;
   } catch (e: any) {
-    message.error(`GPU 测试失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("fw.gpuTestFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
     gpuTesting.value = false;
   }
@@ -610,10 +647,10 @@ const builtinImages = computed(() => {
 /** 镜像地址合法性（与后端 docker.rs validate_image 同规则） */
 function validateImageName(img: string): string | null {
   const t = img.trim();
-  if (!t) return "镜像地址不能为空";
-  if (t.length > 256) return "镜像地址过长（≤256 字符）";
+  if (!t) return i18n.global.t("fw.imageEmpty");
+  if (t.length > 256) return i18n.global.t("fw.imageLong");
   if (!/^[A-Za-z0-9._:/@-]+$/.test(t))
-    return "镜像地址含非法字符（只允许字母数字 . _ / - : @）";
+    return i18n.global.t("fw.imageChars");
   return null;
 }
 
@@ -622,11 +659,11 @@ async function doAddCustomFramework() {
   const label = customLabel.value.trim();
   const image = customImage.value.trim();
   if (!label) {
-    message.warning("请输入框架名");
+    message.warning(t("fw.reqFwLabel"));
     return;
   }
   if (label.length > 30) {
-    message.warning("框架名过长（≤30 字符）");
+    message.warning(t("fw.fwLabelLong"));
     return;
   }
   const imgErr = validateImageName(image);
@@ -638,7 +675,7 @@ async function doAddCustomFramework() {
     builtinImages.value.find((b) => b.label === label || b.image === image) ??
     frameworkOptions.value.find((o) => o.label === label);
   if (dup) {
-    message.warning(`框架名或镜像已存在：${dup.label} → ${dup.image}`);
+    message.warning(t("fw.fwDup", { dup: `${dup.label} → ${dup.image}` }));
     return;
   }
   // 先持久化记录，再拉取镜像
@@ -647,28 +684,28 @@ async function doAddCustomFramework() {
   });
   customLabel.value = "";
   customImage.value = "";
-  message.success(`框架「${label}」已添加，开始拉取镜像`);
+  message.success(t("fw.fwAdded", { label }));
   await doPull(image);
 }
 
 function removeCustomFramework(label: string) {
   dialog.warning({
-    title: "移除自定义框架",
-    content: `确认移除「${label}」？（只删除框架记录，不删除服务器上已拉取的镜像）`,
-    positiveText: "移除",
-    negativeText: "取消",
+    title: t("fw.removeTitle"),
+    content: t("fw.removeContent", { label }),
+    positiveText: t("common.remove"),
+    negativeText: t("common.cancel"),
     onPositiveClick: async () => {
       await settingsStore.save({
         customFrameworks: settings.value.customFrameworks.filter((c) => c.label !== label),
       });
-      message.success("已移除");
+      message.success(t("fw.removed"));
     },
   });
 }
 
 function imageState(img: string): string | null {
   const found = localImages.value.find((i) => i.name === img);
-  return found ? found.size ?? "已拉取" : null;
+  return found ? (found.size ?? t("fw.imagePulled")) : null;
 }
 
 interface ImageRow {
@@ -689,7 +726,7 @@ const imageRows = computed<ImageRow[]>(() =>
 
 const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
   {
-    title: "框架",
+    title: t("fw.colFw"),
     key: "label",
     width: 150,
     render: (r) =>
@@ -700,24 +737,24 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
           default: () => [
             r.label,
             ...(r.isDefault
-              ? [h(NTag, { size: "small", type: "info" }, { default: () => "默认" })]
+              ? [h(NTag, { size: "small", type: "info" }, { default: () => t("fw.tagDefault") })]
               : []),
           ],
         },
       ),
   },
-  { title: "镜像地址", key: "image", ellipsis: { tooltip: true } },
+  { title: t("fw.colImage"), key: "image", ellipsis: { tooltip: true } },
   {
-    title: "本地状态",
+    title: t("fw.colState"),
     key: "state",
     width: 140,
     render: (r) =>
       r.state
-        ? h(NTag, { size: "small", type: "success" }, { default: () => `已拉取 ${r.state}` })
-        : h(NTag, { size: "small" }, { default: () => "未拉取" }),
+        ? h(NTag, { size: "small", type: "success" }, { default: () => t("fw.pulled", { size: r.state }) })
+        : h(NTag, { size: "small" }, { default: () => t("fw.notPulled") }),
   },
   {
-    title: "操作",
+    title: t("common.actions"),
     key: "actions",
     width: 130,
     render: (r) =>
@@ -730,7 +767,7 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
             disabled: !!r.state || pulling.value || !canUseDocker.value,
             loading: pulling.value && pullImage.value === r.image,
             onClick: () => doPull(r.image),
-          }, { default: () => "添加" }),
+          }, { default: () => t("common.add") }),
           ...(r.custom
             ? [h(NButton, {
                 size: "small",
@@ -738,7 +775,7 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
                 ghost: true,
                 disabled: pulling.value,
                 onClick: () => removeCustomFramework(r.label),
-              }, { default: () => "移除" })]
+              }, { default: () => t("common.remove") })]
             : []),
         ],
       }),
@@ -762,10 +799,10 @@ async function doPull(image: string) {
       const cur = st?.daemonProxy ?? null;
       if (st && cur !== want) {
         dialog.warning({
-          title: "配置 Docker 拉取代理",
-          content: `Docker daemon 当前代理：${cur ?? "未配置"}。将配置为 ${want}（写入 systemd 配置并重启 docker，正在运行的容器会中断），完成后自动继续拉取。`,
-          positiveText: "配置并拉取",
-          negativeText: "取消",
+          title: t("docker.proxyTitle"),
+          content: t("fw.proxyDialogContent", { cur: cur ?? t("fw.notConfigured"), want }),
+          positiveText: t("fw.configureAndPull"),
+          negativeText: t("common.cancel"),
           onPositiveClick: () => {
             pendingPull.value = image.trim();
             dockerInstallerRef.value?.askProxy(pid, st, want);
@@ -800,7 +837,7 @@ async function startPull(pid: string, image: string) {
       },
     );
   } catch (e: any) {
-    message.error(`拉取失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("fw.pullFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -838,7 +875,7 @@ async function onDockerSuccess() {
     await serverStore.disconnect();
     await serverStore.connect(p);
   } catch (e: any) {
-    message.error(`重连失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("fw.reconnectFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
   // daemon 代理配置成功 → 刷新状态并继续挂起的拉取
   if (img) {
@@ -869,21 +906,21 @@ function tabParams(tabKey: string): ParamDef[] {
 }
 
 function paramPlaceholder(p: ParamDef): string {
-  if (p.placeholder) return p.placeholder;
+  if (pPlaceholder(p)) return pPlaceholder(p);
   if (p.default !== undefined) {
-    const d = p.default === true ? "启用" : p.default === false ? "关闭" : p.default;
-    return `默认 ${d}`;
+    const d = p.default === true ? t("fw.paramOn") : p.default === false ? t("fw.paramOff") : p.default;
+    return t("fw.paramDefault", { d });
   }
-  return "留空 = 引擎默认";
+  return t("fw.paramEmptyDefault");
 }
 
 function paramTooltip(p: ParamDef): string {
   const parts: string[] = [];
   if (p.flag) parts.push(`CLI: ${p.flag}`);
-  if (p.desc) parts.push(p.desc);
+  if (pDesc(p)) parts.push(pDesc(p));
   if (p.default !== undefined) {
-    const d = p.default === true ? "启用" : p.default === false ? "关闭" : p.default;
-    parts.push(`默认: ${d}`);
+    const d = p.default === true ? t("fw.paramOn") : p.default === false ? t("fw.paramOff") : p.default;
+    parts.push(t("fw.paramDefaultColon", { d }));
   }
   return parts.join("\n");
 }
@@ -893,19 +930,19 @@ function paramTooltip(p: ParamDef): string {
 <template>
   <div>
     <!-- Docker 镜像 -->
-    <n-card size="small" title="Docker 镜像" style="margin-bottom: 16px">
+    <n-card size="small" :title="t('fw.dockerCard')" style="margin-bottom: 16px">
       <template #header-extra>
         <n-space size="small">
           <n-tag v-if="dockerStatus?.installed" type="success" size="small">
-            {{ dockerStatus.version ?? "已安装" }}
+            {{ dockerStatus.version ?? t("fw.installed") }}
           </n-tag>
-          <n-tag v-else type="error" size="small">未安装</n-tag>
+          <n-tag v-else type="error" size="small">{{ t("fw.notInstalled") }}</n-tag>
           <n-tag
             v-if="dockerStatus?.installed && !dockerStatus.usable"
             type="warning"
             size="small"
           >
-            当前用户无权限
+            {{ t("fw.noPerm") }}
           </n-tag>
           <n-tag
             v-if="dockerStatus?.installed && dockerStatus.usable"
@@ -920,7 +957,7 @@ function paramTooltip(p: ParamDef): string {
             type="primary"
             @click="askInstallDocker"
           >
-            安装 Docker
+            {{ t("docker.installTitle") }}
           </n-button>
           <n-button
             v-else-if="dockerStatus && !dockerStatus.usable"
@@ -928,10 +965,10 @@ function paramTooltip(p: ParamDef): string {
             type="warning"
             @click="askAuthorizeDocker"
           >
-            授权
+            {{ t("init.fixDockerAuth") }}
           </n-button>
           <n-button size="small" :loading="imagesLoading" @click="loadDocker()">
-            刷新
+            {{ t("common.refresh") }}
           </n-button>
           <n-button
             v-if="dockerStatus?.installed && dockerStatus.usable"
@@ -939,7 +976,7 @@ function paramTooltip(p: ParamDef): string {
             :loading="gpuTesting"
             @click="doGpuTest"
           >
-            测试 GPU
+            {{ t("fw.testGpu") }}
           </n-button>
         </n-space>
       </template>
@@ -952,13 +989,13 @@ function paramTooltip(p: ParamDef): string {
       <n-space align="center" style="margin-top: 12px">
         <n-input
           v-model:value="customLabel"
-          placeholder="框架名，如 my-vllm"
+          :placeholder="t('fw.customLabelPh')"
           style="width: 180px"
           :disabled="!canUseDocker"
         />
         <n-input
           v-model:value="customImage"
-          placeholder="框架镜像，如 nvcr.io/nvidia/xxx:tag 或 registry:5000/xxx:1.0"
+          :placeholder="t('fw.customImagePh')"
           style="width: 420px"
           :disabled="!canUseDocker"
         />
@@ -968,19 +1005,19 @@ function paramTooltip(p: ParamDef): string {
           :disabled="!customLabel.trim() || !customImage.trim() || pulling || !canUseDocker"
           @click="doAddCustomFramework"
         >
-          添加
+          {{ t("common.add") }}
         </n-button>
       </n-space>
       <div class="fw-desc" style="margin-top: 8px">
-        添加自定义框架镜像（框架名 + 镜像地址），校验通过后自动拉取并加入下方列表；自定义框架可在新建实例时选择。
+        {{ t("fw.customHint") }}
       </div>
     </n-card>
 
     <!-- 原生框架管理 -->
-    <n-card size="small" title="原生框架管理" style="margin-bottom: 16px">
+    <n-card size="small" :title="t('fw.nativeCard')" style="margin-bottom: 16px">
       <template #header-extra>
         <n-button size="small" :loading="detecting" @click="current && store.detect(current.id)">
-          重新检测
+          {{ t("gpu.redetect") }}
         </n-button>
       </template>
       <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:4" responsive="screen">
@@ -988,8 +1025,8 @@ function paramTooltip(p: ParamDef): string {
           <n-card size="small" :bordered="true">
             <div class="fw-name">
               {{ c.label }}
-              <n-tag v-if="c.installed" type="success" size="small">已安装</n-tag>
-              <n-tag v-else type="default" size="small">未安装</n-tag>
+              <n-tag v-if="c.installed" type="success" size="small">{{ t("fw.installed") }}</n-tag>
+              <n-tag v-else type="default" size="small">{{ t("fw.notInstalled") }}</n-tag>
             </div>
             <div class="fw-desc">{{ c.desc }}</div>
             <div v-if="c.version" class="fw-version">{{ c.version }}</div>
@@ -999,14 +1036,14 @@ function paramTooltip(p: ParamDef): string {
                 size="tiny"
                 @click="askInstall(c.nativeTool, c.label, 'install')"
               >
-                一键安装
+                {{ t("fw.oneClickInstall") }}
               </n-button>
               <template v-else-if="c.nativeTool && c.installed">
                 <n-button size="tiny" @click="askInstall(c.nativeTool, c.label, 'upgrade')">
-                  升级
+                  {{ t("fw.act_upgrade") }}
                 </n-button>
                 <n-button size="tiny" type="error" ghost @click="askUninstall(c.fw, c.label)">
-                  卸载
+                  {{ t("fw.act_uninstall") }}
                 </n-button>
               </template>
             </n-space>
@@ -1016,21 +1053,21 @@ function paramTooltip(p: ParamDef): string {
     </n-card>
 
     <!-- 实例列表 -->
-    <n-card size="small" title="框架实例">
+    <n-card size="small" :title="t('fw.instancesCard')">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="openAdd">新建实例</n-button>
+        <n-button type="primary" size="small" @click="openAdd">{{ t("fw.newInst") }}</n-button>
       </template>
       <n-data-table :columns="columns" :data="instances" :bordered="false" size="small" />
-      <n-empty v-if="!instances.length" description="还没有实例，点击「新建实例」配置模型与启动参数" style="padding: 24px 0" />
+      <n-empty v-if="!instances.length" :description="t('fw.noInstances')" style="padding: 24px 0" />
     </n-card>
 
     <!-- 实例表单 -->
-    <n-modal v-model:show="showModal" preset="card" :title="form.id ? '编辑实例' : '新建实例'" style="width: 720px">
+    <n-modal v-model:show="showModal" preset="card" :title="form.id ? t('fw.editInst') : t('fw.newInst')" style="width: 720px">
       <n-form label-placement="left" label-width="132">
-        <n-form-item label="实例名称">
-          <n-input v-model:value="form.name" placeholder="如 qwen7b-chat" />
+        <n-form-item :label="t('fw.name')">
+          <n-input v-model:value="form.name" :placeholder="t('fw.namePh')" />
         </n-form-item>
-        <n-form-item label="框架">
+        <n-form-item :label="t('fw.colFw')">
           <n-select
             :value="form.framework"
             :options="frameworkOptions.map((o) => ({ label: o.label, value: o.value }))"
@@ -1040,77 +1077,77 @@ function paramTooltip(p: ParamDef): string {
 
         <!-- 自定义框架：简化表单（无参数选项），启动命令由用户填写 -->
         <template v-if="isCustomFw">
-          <n-form-item label="模型路径">
+          <n-form-item :label="t('fw.modelPath')">
             <n-input
               v-model:value="form.modelPath"
               :placeholder="current ? `${current.baseDir}/models/...` : ''"
             />
           </n-form-item>
-          <n-form-item label="端口">
+          <n-form-item :label="t('fw.port')">
             <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 160px" />
           </n-form-item>
-          <n-form-item label="镜像">
-            <n-input v-model:value="form.dockerImage" placeholder="框架默认镜像" />
+          <n-form-item :label="t('fw.image')">
+            <n-input v-model:value="form.dockerImage" :placeholder="t('fw.imagePh')" />
           </n-form-item>
-          <n-form-item label="启动命令">
+          <n-form-item :label="t('fw.startCmd')">
             <n-input
               v-model:value="form.params.customCmd"
               type="textarea"
               :autosize="{ minRows: 3, maxRows: 10 }"
-              :placeholder="'镜像后的参数，如 --model /mnt/models/xx --port 8000 --tp 1'"
+              :placeholder="t('fw.startCmdPh')"
               class="preview"
             />
             <div class="fw-desc" style="margin-top: 4px">
-              填写镜像后的启动参数（Docker 容器运行，模型路径按原样挂载进容器）
+              {{ t("fw.customCmdHint") }}
             </div>
           </n-form-item>
         </template>
 
         <!-- 内置框架：保留完整参数设置 -->
         <template v-else>
-          <n-form-item label="运行模式">
+          <n-form-item :label="t('fw.runMode')">
             <n-radio-group v-model:value="form.mode">
-              <n-radio-button value="native">原生进程（nohup + PID）</n-radio-button>
-              <n-radio-button value="docker">Docker 容器</n-radio-button>
+              <n-radio-button value="native">{{ t("fw.modeNative") }}</n-radio-button>
+              <n-radio-button value="docker">{{ t("fw.modeDocker") }}</n-radio-button>
             </n-radio-group>
           </n-form-item>
-          <n-form-item :label="form.framework === 'llama-cpp' ? '模型文件' : '模型目录'">
+          <n-form-item :label="form.framework === 'llama-cpp' ? t('fw.modelFile') : t('fw.modelDir')">
             <n-input
               v-model:value="form.modelPath"
               :placeholder="current ? `${current.baseDir}/models/...` : ''"
             />
           </n-form-item>
-          <n-form-item label="端口">
+          <n-form-item :label="t('fw.port')">
             <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 160px" />
           </n-form-item>
-          <n-form-item v-if="form.mode === 'docker'" label="镜像">
+          <n-form-item v-if="form.mode === 'docker'" :label="t('fw.image')">
             <n-input
               v-model:value="form.dockerImage"
               :placeholder="builtinImageOf(form.framework)"
             />
             <div v-if="isCustomImage" class="fw-desc" style="margin-top: 4px">
-              自定义镜像：下方需自行填写启动参数
+              {{ t("fw.customImageHint") }}
             </div>
           </n-form-item>
 
-          <n-form-item v-if="isCustomImage" label="启动参数">
+          <n-form-item v-if="isCustomImage" :label="t('fw.startArgs')">
             <n-input
               v-model:value="form.params.customCmd"
               type="textarea"
               :autosize="{ minRows: 2, maxRows: 6 }"
-              :placeholder="`如 python3 -m sglang.launch_server --model-path ${form.modelPath || '<模型路径>'} --port ${form.port} --tp 1`"
+              :placeholder="t('fw.startArgsPh', { path: form.modelPath || t('fw.modelPathToken'), port: form.port })"
               class="preview"
             />
           </n-form-item>
 
           <template v-else>
             <n-tabs v-if="meta?.tabs" type="line" size="small" class="fw-param-tabs">
-              <n-tab-pane v-for="t in meta.tabs" :key="t.key" :name="t.key" :tab="t.label">
+              <n-tab-pane v-for="t in meta.tabs" :key="t.key" :name="t.key" :tab="tabLabel(t)">
                 <n-form-item v-for="p in tabParams(t.key)" :key="p.key">
                   <template #label>
                     <n-tooltip trigger="hover" placement="left">
                       <template #trigger>
-                        <span class="param-label">{{ p.label }}</span>
+                        <span class="param-label">{{ pLabel(p) }}</span>
                       </template>
                       <div class="param-tip">{{ paramTooltip(p) }}</div>
                     </n-tooltip>
@@ -1139,7 +1176,7 @@ function paramTooltip(p: ParamDef): string {
               </n-tab-pane>
             </n-tabs>
             <template v-else>
-              <n-form-item v-for="p in visibleParams" :key="p.key" :label="p.label">
+              <n-form-item v-for="p in visibleParams" :key="p.key" :label="pLabel(p)">
                 <n-input
                   v-if="p.type === 'text'"
                   v-model:value="form.params[p.key]"
@@ -1165,7 +1202,7 @@ function paramTooltip(p: ParamDef): string {
           </template>
         </template>
 
-        <n-form-item label="启动命令预览">
+        <n-form-item :label="t('fw.preview')">
           <n-input
             :value="previewErr || preview"
             type="textarea"
@@ -1177,8 +1214,8 @@ function paramTooltip(p: ParamDef): string {
       </n-form>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showModal = false">取消</n-button>
-          <n-button type="primary" @click="onSubmit">保存</n-button>
+          <n-button @click="showModal = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="onSubmit">{{ t("common.save") }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -1187,24 +1224,24 @@ function paramTooltip(p: ParamDef): string {
     <n-modal
       v-model:show="installShow"
       preset="card"
-      :title="`${ACTION_TEXT[installAction]} ${installLabel}`"
+      :title="`${actionText(installAction)} ${installLabel}`"
       style="width: 620px"
     >
       <p style="margin-top: 0; color: #999; font-size: 13px">
-        将在服务器执行以下命令：
+        {{ t("fw.execCmdHint") }}
       </p>
       <p v-if="installAction === 'uninstall'" style="color: #d03050; font-size: 13px; margin: 4px 0">
-        仅移除该引擎本身，保留 torch 等共享依赖，不影响其它引擎运行。
+        {{ t("fw.uninstallHint") }}
       </p>
       <StreamLog :text="installScript" max-height="140px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="installShow = false">取消</n-button>
+          <n-button @click="installShow = false">{{ t("common.cancel") }}</n-button>
           <n-button
             :type="installAction === 'uninstall' ? 'error' : 'primary'"
             @click="onInstallConfirm"
           >
-            开始{{ ACTION_TEXT[installAction] }}
+            {{ t("fw.startAction", { action: actionText(installAction) }) }}
           </n-button>
         </n-space>
       </template>
@@ -1214,7 +1251,7 @@ function paramTooltip(p: ParamDef): string {
     <n-modal
       :show="installStreamShow"
       preset="card"
-      :title="`${ACTION_TEXT[installAction]}日志`"
+      :title="`${actionText(installAction)} ${t('gpu.logSuffix')}`"
       style="width: 720px"
       :mask-closable="false"
       @close="closeInstall"
@@ -1222,10 +1259,10 @@ function paramTooltip(p: ParamDef): string {
       <StreamLog :text="installStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="installDone != null" :type="installDone === 0 ? 'success' : 'error'">
-          退出码 {{ installDone }}
+          {{ t("docker.exitCode", { code: installDone }) }}
         </n-tag>
         <n-button v-if="installDone != null" type="primary" @click="closeInstall">
-          {{ installDone === 0 ? "完成" : "关闭" }}
+          {{ installDone === 0 ? t("docker.done") : t("common.close") }}
         </n-button>
       </n-space>
     </n-modal>
@@ -1234,7 +1271,7 @@ function paramTooltip(p: ParamDef): string {
     <n-modal
       :show="pullShow"
       preset="card"
-      :title="`拉取镜像 ${pullImage}`"
+      :title="t('fw.pullTitle', { image: pullImage })"
       style="width: 720px"
       :mask-closable="false"
       @close="closePull"
@@ -1242,22 +1279,22 @@ function paramTooltip(p: ParamDef): string {
       <StreamLog :text="pullStream" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="pullDone != null" :type="pullDone === 0 ? 'success' : 'error'">
-          退出码 {{ pullDone }}
+          {{ t("docker.exitCode", { code: pullDone }) }}
         </n-tag>
         <n-button v-if="pullDone != null" type="primary" @click="closePull">
-          {{ pullDone === 0 ? "完成" : "关闭" }}
+          {{ pullDone === 0 ? t("docker.done") : t("common.close") }}
         </n-button>
       </n-space>
     </n-modal>
 
     <!-- GPU 实测 -->
-    <n-modal v-model:show="gpuTestShow" preset="card" title="GPU 实测" style="width: 720px">
-      <StreamLog :text="gpuTestOut" placeholder="(无输出)" />
+    <n-modal v-model:show="gpuTestShow" preset="card" :title="t('fw.gpuTestTitle')" style="width: 720px">
+      <StreamLog :text="gpuTestOut" :placeholder="t('fw.noOutput')" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="gpuTestOk != null" :type="gpuTestOk ? 'success' : 'error'">
-          {{ gpuTestOk ? "GPU 可用" : "GPU 不可用" }}
+          {{ gpuTestOk ? t("fw.gpuOk") : t("fw.gpuNotOk") }}
         </n-tag>
-        <n-button type="primary" @click="gpuTestShow = false">关闭</n-button>
+        <n-button type="primary" @click="gpuTestShow = false">{{ t("common.close") }}</n-button>
       </n-space>
     </n-modal>
 
@@ -1277,30 +1314,30 @@ function paramTooltip(p: ParamDef): string {
       <n-drawer-content closable>
         <template #header>
           <n-space align="center" justify="space-between" style="width: 100%">
-            <span>实例日志</span>
+            <span>{{ t("fw.logsTitle") }}</span>
             <n-space align="center">
-              <n-checkbox v-model:checked="autoRefreshLogs">自动刷新 (5s)</n-checkbox>
+              <n-checkbox v-model:checked="autoRefreshLogs">{{ t("fw.autoRefresh") }}</n-checkbox>
               <n-button size="small" :loading="logsLoading" @click="store.refreshLogs()">
-                刷新
+                {{ t("common.refresh") }}
               </n-button>
             </n-space>
           </n-space>
         </template>
         <div class="log-pager">
           <template v-if="loadingEarlier">
-            <n-spin size="small" /> 正在加载更早的日志...
+            <n-spin size="small" /> {{ t("fw.loadingEarlier") }}
           </template>
           <template v-else-if="loadedLines >= logTotalLines">
-            已显示全部 {{ logTotalLines }} 行
+            {{ t("fw.allShown", { n: logTotalLines }) }}
           </template>
           <template v-else>
-            已加载最后 {{ loadedLines }} / {{ logTotalLines }} 行，向上滚动加载更早
+            {{ t("fw.loadedLines", { loaded: loadedLines, total: logTotalLines }) }}
           </template>
         </div>
         <StreamLog
           ref="logStreamRef"
           :text="logs"
-          :placeholder="'(空)'"
+          :placeholder="t('fw.empty')"
           :max-height="'calc(100vh - 280px)'"
           @reach-top="onLogReachTop"
         />

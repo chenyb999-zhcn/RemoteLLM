@@ -38,6 +38,9 @@ pub struct AppSettings {
     /// 深色主题
     #[serde(default = "default_dark")]
     pub dark_theme: bool,
+    /// UI 语言：zh | en
+    #[serde(default = "default_language")]
+    pub language: String,
     /// 启用下载代理（服务器侧 pip/模型下载/git clone/docker daemon）
     #[serde(default)]
     pub proxy_enabled: bool,
@@ -136,6 +139,10 @@ fn default_dark() -> bool {
     true
 }
 
+fn default_language() -> String {
+    "zh".into()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -147,6 +154,7 @@ impl Default for AppSettings {
             last_profile_id: String::new(),
             auto_connect: false,
             dark_theme: true,
+            language: default_language(),
             proxy_enabled: false,
             proxy_url: String::new(),
             pip_index: default_pip_index(),

@@ -14,14 +14,17 @@ import {
   NSwitch,
   useMessage,
 } from "naive-ui";
+import { useI18n } from "vue-i18n";
 import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { useSettingsStore } from "../stores/settings";
+import { i18n } from "../i18n";
 
 const settings = useSettingsStore();
 const { value } = storeToRefs(settings);
 const message = useMessage();
 const router = useRouter();
+const { t } = useI18n();
 
 const form = reactive({
   defaultModelSource: "modelscope",
@@ -31,30 +34,41 @@ const form = reactive({
   pollSeconds: 3,
   autoConnect: false,
   darkTheme: true,
+  language: "zh",
   proxyEnabled: false,
   proxyUrl: "",
   pipIndex: "tuna",
   debMirror: "tuna",
 });
 
+const languageOptions = [
+  { label: "中文", value: "zh" },
+  { label: "English", value: "en" },
+];
 const pipIndexOptions = [
-  { label: "清华 TUNA", value: "tuna" },
-  { label: "阿里云", value: "aliyun" },
-  { label: "中科大 USTC", value: "ustc" },
-  { label: "华为云", value: "huawei" },
-  { label: "腾讯云", value: "tencent" },
-  { label: "官方 PyPI", value: "pypi" },
+  { label: t("settings.mirrorTuna"), value: "tuna" },
+  { label: t("settings.mirrorAliyun"), value: "aliyun" },
+  { label: t("settings.mirrorUstc"), value: "ustc" },
+  { label: t("settings.mirrorHuawei"), value: "huawei" },
+  { label: t("settings.mirrorTencent"), value: "tencent" },
+  { label: t("settings.mirrorPypi"), value: "pypi" },
 ];
 const debMirrorOptions = [
-  { label: "清华 TUNA", value: "tuna" },
-  { label: "阿里云", value: "aliyun" },
-  { label: "中科大 USTC", value: "ustc" },
-  { label: "华为云", value: "huawei" },
-  { label: "腾讯云", value: "tencent" },
-  { label: "官方源", value: "official" },
+  { label: t("settings.mirrorTuna"), value: "tuna" },
+  { label: t("settings.mirrorAliyun"), value: "aliyun" },
+  { label: t("settings.mirrorUstc"), value: "ustc" },
+  { label: t("settings.mirrorHuawei"), value: "huawei" },
+  { label: t("settings.mirrorTencent"), value: "tencent" },
+  { label: t("settings.mirrorOfficial"), value: "official" },
 ];
 
 const saving = ref(false);
+
+function onLanguageChange(lang: string) {
+  form.language = lang;
+  i18n.global.locale.value = lang as "zh" | "en";
+  void settings.save({ language: lang });
+}
 
 onMounted(async () => {
   await settings.load();
@@ -65,6 +79,7 @@ onMounted(async () => {
   form.pollSeconds = Math.min(60, Math.max(1, Math.round(value.value.pollIntervalMs / 1000)));
   form.autoConnect = value.value.autoConnect;
   form.darkTheme = value.value.darkTheme;
+  form.language = value.value.language || "zh";
   form.proxyEnabled = value.value.proxyEnabled;
   form.proxyUrl = value.value.proxyUrl;
   form.pipIndex = value.value.pipIndex || "tuna";
@@ -75,11 +90,11 @@ async function onSave() {
   if (form.proxyEnabled) {
     const u = form.proxyUrl.trim();
     if (!u) {
-      message.error("启用代理前请填写代理地址");
+      message.error(t("settings.proxyUrlRequired"));
       return;
     }
     if (!/^(http|https|socks5):\/\/.+/.test(u)) {
-      message.error("代理地址需以 http:// 、https:// 或 socks5:// 开头");
+      message.error(t("settings.proxyUrlInvalid"));
       return;
     }
   }
@@ -93,14 +108,15 @@ async function onSave() {
       pollIntervalMs: Math.min(60, Math.max(1, form.pollSeconds)) * 1000,
       autoConnect: form.autoConnect,
       darkTheme: form.darkTheme,
+      language: form.language,
       proxyEnabled: form.proxyEnabled,
       proxyUrl: form.proxyUrl.trim(),
       pipIndex: form.pipIndex,
       debMirror: form.debMirror,
     });
-    message.success("设置已保存");
+    message.success(t("settings.saved"));
   } catch (e: any) {
-    message.error(`保存失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("common.saveFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
     saving.value = false;
   }
@@ -110,24 +126,44 @@ async function onSave() {
 <template>
   <div class="page">
     <n-space vertical :size="16" style="width: 100%">
-      <n-card title="模型下载" size="small">
+      <n-card :title="t('settings.general')" size="small">
         <n-form label-placement="left" label-width="110">
-          <n-form-item label="默认来源">
+          <n-form-item :label="t('settings.language')">
+            <n-select
+              :value="form.language"
+              :options="languageOptions"
+              style="width: 160px"
+              @update:value="onLanguageChange"
+            />
+          </n-form-item>
+          <n-form-item :label="t('settings.autoConnect')">
+            <n-switch v-model:value="form.autoConnect" />
+            <span class="hint">{{ t("settings.autoConnectHint") }}</span>
+          </n-form-item>
+          <n-form-item :label="t('settings.darkTheme')">
+            <n-switch v-model:value="form.darkTheme" />
+          </n-form-item>
+        </n-form>
+      </n-card>
+
+      <n-card :title="t('settings.modelDownload')" size="small">
+        <n-form label-placement="left" label-width="110">
+          <n-form-item :label="t('settings.defaultSource')">
             <n-radio-group v-model:value="form.defaultModelSource">
               <n-radio-button value="modelscope">ModelScope</n-radio-button>
               <n-radio-button value="huggingface">Hugging Face</n-radio-button>
             </n-radio-group>
           </n-form-item>
-          <n-form-item label="默认模型目录">
+          <n-form-item :label="t('settings.defaultModelDir')">
             <n-input
               v-model:value="form.modelDir"
-              placeholder="留空 = 各服务器 baseDir/models（可单台服务器覆盖）"
+              :placeholder="t('settings.defaultModelDirPh')"
             />
           </n-form-item>
-          <n-form-item label="HF 镜像端点">
+          <n-form-item :label="t('settings.hfEndpoint')">
             <n-input
               v-model:value="form.hfEndpoint"
-              placeholder="留空 = 官方 huggingface.co，如 https://hf-mirror.com"
+              :placeholder="t('settings.hfEndpointPh')"
             />
           </n-form-item>
           <n-form-item label="HF Token">
@@ -135,65 +171,55 @@ async function onSave() {
               v-model:value="form.hfToken"
               type="password"
               show-password-on="click"
-              placeholder="私有模型需要，可留空"
+              :placeholder="t('settings.hfTokenPh')"
             />
           </n-form-item>
         </n-form>
       </n-card>
 
-      <n-card title="下载代理（服务器侧生效）" size="small">
+      <n-card :title="t('settings.proxyCard')" size="small">
         <n-form label-placement="left" label-width="110">
-          <n-form-item label="启用代理">
+          <n-form-item :label="t('settings.enableProxy')">
             <n-switch v-model:value="form.proxyEnabled" />
-            <span class="hint">模型下载、pip 安装、git clone 走代理；docker 拉镜像需配置 daemon（拉取时会提示）</span>
+            <span class="hint">{{ t("settings.proxyHint") }}</span>
           </n-form-item>
-          <n-form-item label="代理地址">
+          <n-form-item :label="t('settings.proxyUrl')">
             <n-input
               v-model:value="form.proxyUrl"
               :disabled="!form.proxyEnabled"
-              placeholder="如 http://192.168.1.10:7890"
+              :placeholder="t('settings.proxyUrlPh')"
             />
           </n-form-item>
         </n-form>
       </n-card>
 
-      <n-card title="软件源镜像（服务器侧生效）" size="small">
+      <n-card :title="t('settings.mirrorCard')" size="small">
         <n-form label-placement="left" label-width="110">
-          <n-form-item label="pip 源">
+          <n-form-item :label="t('settings.pipIndex')">
             <n-select v-model:value="form.pipIndex" :options="pipIndexOptions" style="width: 220px" />
-            <span class="hint">引擎/依赖 pip 安装走该镜像（vLLM/sglang/1Cat 等）</span>
+            <span class="hint">{{ t("settings.pipHint") }}</span>
           </n-form-item>
-          <n-form-item label="deb 源">
+          <n-form-item :label="t('settings.debMirror')">
             <n-select v-model:value="form.debMirror" :options="debMirrorOptions" style="width: 220px" />
-            <span class="hint">apt 装工具链/Docker 前自动切换 /etc/apt/sources.list（幂等）</span>
+            <span class="hint">{{ t("settings.debHint") }}</span>
           </n-form-item>
         </n-form>
       </n-card>
 
-      <n-card title="仪表盘" size="small">
+      <n-card :title="t('settings.dashboard')" size="small">
         <n-form label-placement="left" label-width="110">
-          <n-form-item label="轮询间隔">
+          <n-form-item :label="t('settings.pollInterval')">
             <n-input-number v-model:value="form.pollSeconds" :min="1" :max="60" />
-            <span class="hint">秒（1-60）</span>
-          </n-form-item>
-        </n-form>
-      </n-card>
-
-      <n-card title="常规" size="small">
-        <n-form label-placement="left" label-width="110">
-          <n-form-item label="自动连接">
-            <n-switch v-model:value="form.autoConnect" />
-            <span class="hint">启动时自动连接上次使用的服务器</span>
-          </n-form-item>
-          <n-form-item label="深色主题">
-            <n-switch v-model:value="form.darkTheme" />
+            <span class="hint">{{ t("common.seconds") }}</span>
           </n-form-item>
         </n-form>
       </n-card>
 
       <n-space justify="end">
-        <n-button @click="router.back()">返回</n-button>
-        <n-button type="primary" :loading="saving" @click="onSave">保存设置</n-button>
+        <n-button @click="router.back()">{{ t("common.back") }}</n-button>
+        <n-button type="primary" :loading="saving" @click="onSave">
+          {{ t("settings.saveSettings") }}
+        </n-button>
       </n-space>
     </n-space>
   </div>

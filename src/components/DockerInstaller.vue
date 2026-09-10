@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { NButton, NInput, NModal, NSpace, NTag, useMessage } from "naive-ui";
+import { useI18n } from "vue-i18n";
 import { api, onTaskStream } from "../lib/api";
 import StreamLog from "./StreamLog.vue";
 import type { DockerStatus } from "../lib/types";
+
+const { t } = useI18n();
 
 const emit = defineEmits<{
   /** 安装/授权退出码 0（调用方应重连以刷新 docker 组权限） */
@@ -54,7 +57,7 @@ async function runTask(taskId: string, title: string, reconnect: boolean) {
         logText.value += c.data;
       },
       (d) => {
-        logText.value += `\n[退出码 ${d.exitCode}]\n`;
+        logText.value += `\n${t("common.exitCode", { code: d.exitCode })}\n`;
         logDone.value = d.exitCode;
         if (d.exitCode === 0 && needsReconnect.value) emit("success");
         resolve();
@@ -78,14 +81,14 @@ async function start(kind: "install" | "authorize" | "proxy", profileId: string,
     await runTask(
       taskId,
       kind === "install"
-        ? "Docker 安装日志"
+        ? t("docker.logInstall")
         : kind === "proxy"
-          ? "Docker Daemon 代理配置日志"
-          : "Docker 授权日志",
+          ? t("docker.logProxy")
+          : t("docker.logAuthorize"),
       true,
     );
   } catch (e: any) {
-    message.error(`启动失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("common.startFailedMsg", { msg: e?.message ?? JSON.stringify(e) }));
     emit("done");
   }
 }
@@ -101,7 +104,7 @@ function confirmStart() {
     passErr.value = "";
     passAction.value = () => {
       if (!pass.value.trim()) {
-        passErr.value = "请输入 sudo 密码";
+        passErr.value = t("docker.passRequired");
         return;
       }
       passShow.value = false;
@@ -183,30 +186,36 @@ defineExpose({ askInstall, askAuthorize, askProxy });
     preset="card"
     :title="
       confirmKind === 'install'
-        ? '安装 Docker'
+        ? t('docker.installTitle')
         : confirmKind === 'proxy'
-          ? '配置 Docker 拉取代理'
-          : '授权当前用户使用 Docker'
+          ? t('docker.proxyTitle')
+          : t('docker.authorizeTitle')
     "
     style="width: 660px"
   >
     <p style="margin-top: 0; color: #999; font-size: 13px">
       <template v-if="confirmKind === 'install'">
-        将在服务器安装 docker.io 与 nvidia-container-toolkit（GPU 运行时），并把当前用户加入 docker 组。将执行：
+        {{ t("docker.installDesc") }}
       </template>
       <template v-else-if="confirmKind === 'proxy'">
-        将写入 docker daemon 的 systemd 代理配置并重启 docker（正在运行的容器会中断）。将执行：
+        {{ t("docker.proxyDesc") }}
       </template>
       <template v-else>
-        当前用户没有 Docker 使用权限，将确保 daemon 运行并把用户加入 docker 组：
+        {{ t("docker.authorizeDesc") }}
       </template>
     </p>
     <StreamLog :text="confirmScript" :auto-scroll="false" />
     <template #footer>
       <n-space justify="end">
-        <n-button @click="cancelConfirm">取消</n-button>
+        <n-button @click="cancelConfirm">{{ t("common.cancel") }}</n-button>
         <n-button type="primary" @click="confirmStart">
-          {{ confirmKind === "install" ? "开始安装" : confirmKind === "proxy" ? "开始配置" : "开始授权" }}
+          {{
+            confirmKind === "install"
+              ? t("docker.startInstall")
+              : confirmKind === "proxy"
+                ? t("docker.startProxy")
+                : t("docker.startAuthorize")
+          }}
         </n-button>
       </n-space>
     </template>
@@ -216,27 +225,27 @@ defineExpose({ askInstall, askAuthorize, askProxy });
   <n-modal
     v-model:show="passShow"
     preset="card"
-    title="需要 sudo 密码"
+    :title="t('docker.passTitle')"
     style="width: 440px"
     :mask-closable="false"
     @close="closePass"
   >
     <p style="margin-top: 0; color: #999; font-size: 13px">
-      当前用户无免密 sudo 权限，请输入该用户的 sudo 密码（密码仅本次使用，不会保存）。
+      {{ t("docker.passDesc") }}
     </p>
     <n-input
       v-model:value="pass"
       type="password"
       show-password-on="click"
-      placeholder="sudo 密码"
+      :placeholder="t('docker.passPh')"
       :status="passErr ? 'error' : undefined"
       @keyup.enter="passAction?.()"
     />
     <div v-if="passErr" class="pass-err">{{ passErr }}</div>
     <template #footer>
       <n-space justify="end">
-        <n-button @click="closePass">取消</n-button>
-        <n-button type="primary" @click="passAction?.()">确定</n-button>
+        <n-button @click="closePass">{{ t("common.cancel") }}</n-button>
+        <n-button type="primary" @click="passAction?.()">{{ t("common.ok") }}</n-button>
       </n-space>
     </template>
   </n-modal>
@@ -253,10 +262,10 @@ defineExpose({ askInstall, askAuthorize, askProxy });
     <StreamLog :text="logText" />
     <n-space justify="end" style="margin-top: 12px">
       <n-tag v-if="logDone != null" :type="logDone === 0 ? 'success' : 'error'">
-        退出码 {{ logDone }}
+        {{ t("docker.exitCode", { code: logDone }) }}
       </n-tag>
       <n-button v-if="logDone != null" type="primary" @click="closeLog">
-        {{ logDone === 0 ? "完成" : "关闭" }}
+        {{ logDone === 0 ? t("docker.done") : t("common.close") }}
       </n-button>
     </n-space>
   </n-modal>

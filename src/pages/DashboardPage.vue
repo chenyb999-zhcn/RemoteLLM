@@ -17,6 +17,7 @@ import {
   type DataTableColumns,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
+import { useI18n } from "vue-i18n";
 import { useServerStore } from "../stores/server";
 import { useDashboardStore, metricKey } from "../stores/dashboard";
 import { fmtBytes } from "../lib/api";
@@ -30,6 +31,7 @@ const dash = useDashboardStore();
 const { snaps, procs, pollError, metricsPort, metrics, metricsLoading, metricsErr } =
   storeToRefs(dash);
 const message = useMessage();
+const { t } = useI18n();
 
 const MAX_SELECTED = 8;
 
@@ -38,7 +40,7 @@ onMounted(async () => {
     try {
       await store.refreshEnv();
     } catch (e: any) {
-      message.error(`环境检查失败: ${e?.message ?? JSON.stringify(e)}`);
+      message.error(t("dashboard.envCheckFailed", { msg: e?.message ?? JSON.stringify(e) }));
     }
   }
 });
@@ -47,7 +49,7 @@ async function onRefreshEnv() {
   try {
     await store.refreshEnv();
   } catch (e: any) {
-    message.error(`环境检查失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("dashboard.envCheckFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -58,7 +60,7 @@ function onFetchMetrics() {
 function onMetricsSelChange(keys: Array<string | number> | null) {
   const next = (keys ?? []).filter((k): k is string => typeof k === "string");
   if (next.length > MAX_SELECTED) {
-    message.warning(`最多同时勾选 ${MAX_SELECTED} 个指标上图`);
+    message.warning(t("dashboard.maxSelected", { n: MAX_SELECTED }));
     return;
   }
   dash.setSelected(next);
@@ -92,7 +94,7 @@ const powerSeries = computed(() =>
 );
 const sysMemSeries = computed((): Series[] => [
   {
-    label: "已用内存 (GB)",
+    label: t("dashboard.sysMemLabel"),
     data: snaps.value.map((s) => ({
       x: s.ts,
       y: s.memUsed != null ? s.memUsed / 1073741824 : null,
@@ -135,10 +137,10 @@ const cpuStat = computed<StatItem>(() => {
   const n = env.value?.cpuCount;
   const value = model
     ? n
-      ? `${model} (${n} 核)`
+      ? `${model} (${t("dashboard.cores", { n })})`
       : model
     : n
-      ? `${n} 核`
+      ? t("dashboard.cores", { n })
       : "-";
   return { label: "CPU", value, warn: n == null, title: model || undefined };
 });
@@ -155,45 +157,48 @@ const envStats = computed<StatItem[]>(() => {
   const e = env.value;
   if (!e) return [];
   return [
-    { label: "系统", value: [e.os, e.kernel].filter(Boolean).join(" ") || "-" },
+    { label: t("dashboard.statSys"), value: [e.os, e.kernel].filter(Boolean).join(" ") || "-" },
     cpuStat.value,
     {
-      label: "内存",
+      label: t("dashboard.statMem"),
       value: e.memTotal ? `${fmtBytes(e.memUsed)} / ${fmtBytes(e.memTotal)}` : "-",
     },
     {
-      label: disks.value.length > 1 ? `磁盘 (${disks.value.length} 分区)` : "磁盘 /",
+      label:
+        disks.value.length > 1
+          ? t("dashboard.diskPartitions", { n: disks.value.length })
+          : t("dashboard.diskRoot"),
       value:
         rootDisk.value?.total != null
           ? `${fmtBytes(rootDisk.value.used)} / ${fmtBytes(rootDisk.value.total)}`
           : "-",
     },
     { label: "Python", value: e.python ?? "-", warn: e.python == null },
-    { label: "CUDA", value: e.cuda ?? "未安装", warn: e.cuda == null },
-    { label: "GPU 驱动", value: e.driver || "未安装", warn: !e.driver },
-    { label: "Docker", value: e.docker ?? "未安装", warn: e.docker == null },
+    { label: "CUDA", value: e.cuda ?? t("dashboard.notInstalled"), warn: e.cuda == null },
+    { label: t("dashboard.gpuDriver"), value: e.driver || t("dashboard.notInstalled"), warn: !e.driver },
+    { label: "Docker", value: e.docker ?? t("dashboard.notInstalled"), warn: e.docker == null },
   ];
 });
 
-const procColumns: DataTableColumns<ProcRow> = [
+const procColumns = computed<DataTableColumns<ProcRow>>(() => [
   { title: "GPU", key: "gpu", width: 70 },
   { title: "PID", key: "pid", width: 100 },
-  { title: "计算单元 %", key: "sm", width: 110 },
-  { title: "显存带宽 %", key: "memBw", width: 110 },
-  { title: "显存占用", key: "mem", width: 110, render: (r) => (r.mem != null ? `${r.mem} MiB` : "-") },
-  { title: "进程", key: "command", ellipsis: { tooltip: true } },
-];
+  { title: t("dashboard.procColSm"), key: "sm", width: 110 },
+  { title: t("dashboard.procColMemBw"), key: "memBw", width: 110 },
+  { title: t("dashboard.procColMem"), key: "mem", width: 110, render: (r) => (r.mem != null ? `${r.mem} MiB` : "-") },
+  { title: t("dashboard.procColCmd"), key: "command", ellipsis: { tooltip: true } },
+]);
 
-const metricColumns: DataTableColumns<MetricSample> = [
+const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
   { type: "selection" },
   {
-    title: "指标名",
+    title: t("dashboard.metricColName"),
     key: "name",
     ellipsis: { tooltip: true },
     render: (m) => h("span", { title: m.help ?? "" }, m.name),
   },
   {
-    title: "标签",
+    title: t("dashboard.metricColLabels"),
     key: "labels",
     ellipsis: { tooltip: true },
     render: (m) =>
@@ -202,7 +207,7 @@ const metricColumns: DataTableColumns<MetricSample> = [
         : "-",
   },
   {
-    title: "值",
+    title: t("dashboard.metricColValue"),
     key: "value",
     width: 130,
     render: (m) =>
@@ -212,19 +217,19 @@ const metricColumns: DataTableColumns<MetricSample> = [
           : String(Number(m.value.toFixed(4)))
         : String(m.value),
   },
-];
+]);
 </script>
 
 <template>
   <div>
     <n-space justify="space-between" align="center" style="margin-bottom: 16px">
-      <h2 style="margin: 0">总览</h2>
+      <h2 style="margin: 0">{{ t("dashboard.title") }}</h2>
       <n-space>
         <n-tag v-if="pollError" type="error" size="small">
-          轮询失败: {{ pollError }}
+          {{ t("dashboard.pollError", { err: pollError }) }}
         </n-tag>
         <n-button size="small" :loading="envLoading" @click="onRefreshEnv">
-          刷新环境
+          {{ t("dashboard.refreshEnv") }}
         </n-button>
       </n-space>
     </n-space>
@@ -249,7 +254,7 @@ const metricColumns: DataTableColumns<MetricSample> = [
         <!-- 多分区磁盘明细 -->
         <n-grid-item v-if="disks.length > 1" span="2 m:4">
           <n-card size="small" class="stat-card" :content-style="{ padding: '8px 12px' }">
-            <div class="stat-label">磁盘分区明细</div>
+            <div class="stat-label">{{ t("dashboard.diskDetail") }}</div>
             <div
               v-for="d in disks.slice(0, 6)"
               :key="d.mount"
@@ -269,7 +274,9 @@ const metricColumns: DataTableColumns<MetricSample> = [
                 {{ fmtBytes(d.used) }} / {{ fmtBytes(d.total) }} ({{ diskPct(d.total, d.used) }}%)
               </span>
             </div>
-            <div v-if="disks.length > 6" class="disk-more">… 其余 {{ disks.length - 6 }} 个分区</div>
+            <div v-if="disks.length > 6" class="disk-more">
+              {{ t("dashboard.diskMore", { n: disks.length - 6 }) }}
+            </div>
           </n-card>
         </n-grid-item>
       </n-grid>
@@ -277,18 +284,20 @@ const metricColumns: DataTableColumns<MetricSample> = [
     <n-result
       v-else-if="!envLoading"
       status="404"
-      title="暂无环境信息"
-      description="点击右上角「刷新环境」获取 GPU / CUDA / 驱动信息"
+      :title="t('dashboard.noEnvTitle')"
+      :description="t('dashboard.noEnvDesc')"
     />
 
     <!-- 实时监控 -->
     <n-card size="small" style="margin-top: 16px">
-      <template #header>实时监控（每 3s 采样）</template>
+      <template #header>{{ t("dashboard.realtime") }}</template>
       <template #header-extra>
         <n-space size="small" align="center">
-          <n-tag v-if="latest?.uptime" size="small">运行 {{ latest.uptime }}</n-tag>
+          <n-tag v-if="latest?.uptime" size="small">
+            {{ t("dashboard.uptime", { v: latest.uptime }) }}
+          </n-tag>
           <n-tag v-if="latest" size="small">
-            磁盘 {{ fmtBytes(latest.diskUsed) }} / {{ fmtBytes(latest.diskTotal) }}
+            {{ t("dashboard.disk") }} {{ fmtBytes(latest.diskUsed) }} / {{ fmtBytes(latest.diskTotal) }}
           </n-tag>
         </n-space>
       </template>
@@ -296,34 +305,34 @@ const metricColumns: DataTableColumns<MetricSample> = [
       <template v-if="latest && latest.gpus.length">
         <n-grid :x-gap="16" :y-gap="16" cols="1 m:2" responsive="screen">
           <n-grid-item>
-            <div class="chart-title">GPU 利用率</div>
+            <div class="chart-title">{{ t("dashboard.chartUtil") }}</div>
             <line-chart :series="utilSeries" :y-max="100" y-label="%" />
           </n-grid-item>
           <n-grid-item>
-            <div class="chart-title">GPU 显存</div>
+            <div class="chart-title">{{ t("dashboard.chartMem") }}</div>
             <line-chart :series="memSeries" y-label="GB" fill />
           </n-grid-item>
           <n-grid-item>
-            <div class="chart-title">GPU 温度</div>
+            <div class="chart-title">{{ t("dashboard.chartTemp") }}</div>
             <line-chart :series="tempSeries" y-label="°C" />
           </n-grid-item>
           <n-grid-item>
-            <div class="chart-title">GPU 功耗</div>
+            <div class="chart-title">{{ t("dashboard.chartPower") }}</div>
             <line-chart :series="powerSeries" y-label="W" />
           </n-grid-item>
         </n-grid>
-        <div class="chart-title" style="margin-top: 16px">系统内存</div>
+        <div class="chart-title" style="margin-top: 16px">{{ t("dashboard.chartSysMem") }}</div>
         <line-chart :series="sysMemSeries" y-label="GB" fill />
       </template>
       <n-empty
         v-else
-        description="未检测到 GPU（nvidia-smi 不可用）"
+        :description="t('dashboard.noGpu')"
         style="padding: 24px 0"
       />
 
       <!-- 进程 -->
       <div class="chart-title" style="margin-top: 16px">
-        GPU 进程（nvidia-smi pmon）
+        {{ t("dashboard.gpuProcs") }}
       </div>
       <n-data-table
         v-if="procs.length"
@@ -335,15 +344,15 @@ const metricColumns: DataTableColumns<MetricSample> = [
       />
       <n-empty
         v-else
-        description="当前没有占用 GPU 的进程"
+        :description="t('dashboard.noProcs')"
         style="padding: 12px 0"
       />
     </n-card>
 
     <!-- 推理服务指标 -->
-    <n-card size="small" title="推理服务指标 (/metrics)" style="margin-top: 16px">
+    <n-card size="small" :title="t('dashboard.metricsCard')" style="margin-top: 16px">
       <n-space align="center" style="margin-bottom: 12px">
-        <span style="color: #999">服务器本地端口：</span>
+        <span style="color: #999">{{ t("dashboard.localPort") }}</span>
         <n-input-number
           v-model:value="metricsPort"
           :min="1"
@@ -357,10 +366,10 @@ const metricColumns: DataTableColumns<MetricSample> = [
           :loading="metricsLoading"
           @click="onFetchMetrics"
         >
-          抓取
+          {{ t("dashboard.fetch") }}
         </n-button>
         <n-switch v-model:value="dash.metricsAuto" size="small" />
-        <span style="color: #999; font-size: 12px">自动刷新（跟随轮询间隔，连续抓取画折线）</span>
+        <span style="color: #999; font-size: 12px">{{ t("dashboard.autoHint") }}</span>
         <span v-if="metricsErr" class="err-text">{{ metricsErr }}</span>
       </n-space>
 
@@ -378,7 +387,7 @@ const metricColumns: DataTableColumns<MetricSample> = [
         class="chart-title"
         style="margin-bottom: 12px"
       >
-        已勾选 {{ dash.metricsSelected.length }} 个指标，再抓取一次即可出图
+        {{ t("dashboard.selectedHint", { n: dash.metricsSelected.length }) }}
       </div>
 
       <n-data-table

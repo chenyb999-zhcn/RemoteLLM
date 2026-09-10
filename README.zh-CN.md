@@ -111,7 +111,7 @@ npm run tauri build -- --bundles nsis   # 打包
 
 ## 注意事项
 
-- **V100（sm70）用户**：官方 vLLM 新版已不支持 sm70，建议使用 1Cat-vLLM（vLLM fork，含 SM70 支持），默认镜像 `ghcr.io/chenyb999-zhcn/1cat-vllm:1.5`
+- **V100（sm70）用户**：官方 vLLM 新版已不支持 sm70，建议使用 [1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM)（vLLM fork，含 SM70 支持），默认镜像 `ghcr.io/chenyb999-zhcn/1cat-vllm:1.5`
 - **sudo 操作**：走密码流，密码仅当次使用、不保存；服务器配置免密 sudo 或 root 登录则无感知
 - **代理**：设置页启用下载代理后，模型下载 / pip / git clone 走代理；Docker 拉镜像时若 daemon 代理不一致会自动引导配置（重启 docker，运行中容器会中断）
 - **凭据安全**：SSH 密码 / 私钥路径、HF Token 仅存储于本机应用数据目录（JSON），不上传任何服务器

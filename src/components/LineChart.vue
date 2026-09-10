@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { Line } from "vue-chartjs";
 import { PALETTE } from "../lib/charts";
+import { i18n } from "../i18n";
 
 export interface Series {
   label: string;
@@ -50,14 +51,17 @@ const options = computed<any>(() => ({
       ticks: {
         maxTicksLimit: 6,
         maxRotation: 0,
-        // 24 小时制，避免 locale 默认带 am/pm
+        // 24 小时制，避免 locale 默认带 am/pm；locale 跟随应用语言
         callback: (value: number) =>
-          new Date(value).toLocaleTimeString("zh-CN", {
-            hour12: false,
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          }),
+          new Date(value).toLocaleTimeString(
+            i18n.global.locale.value === "en" ? "en-GB" : "zh-CN",
+            {
+              hour12: false,
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            },
+          ),
       },
     },
     y: {

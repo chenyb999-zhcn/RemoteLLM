@@ -18,6 +18,7 @@ import {
   type DataTableColumns,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
+import { useI18n } from "vue-i18n";
 import { useServerStore } from "../stores/server";
 import { useSettingsStore } from "../stores/settings";
 import { api, fmtBytes, onTaskStream } from "../lib/api";
@@ -28,6 +29,7 @@ const { current } = storeToRefs(store);
 const settingsStore = useSettingsStore();
 const message = useMessage();
 const dialog = useDialog();
+const { t } = useI18n();
 
 const result = ref<GpuQueryResult | null>(null);
 const loading = ref(false);
@@ -39,7 +41,7 @@ async function refresh() {
   try {
     result.value = await api.gpuQuery(pid);
   } catch (e: any) {
-    message.error(`GPU 信息获取失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("gpu.queryFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
     loading.value = false;
   }
@@ -98,48 +100,52 @@ async function killProc(p: GpuProcRow) {
   const pid = current.value?.id;
   if (!pid) return;
   dialog.error({
-    title: "结束 GPU 进程",
-    content: `PID ${p.pid}（${p.name}，占用 ${p.memMb ?? "?"} MiB）\n先 SIGTERM，3 秒后仍存活将 SIGKILL。确认结束？`,
-    positiveText: "结束",
-    negativeText: "取消",
+    title: t("gpu.killTitle"),
+    content: t("gpu.killContent", {
+      pid: p.pid,
+      name: p.name,
+      mem: p.memMb ?? "?",
+    }),
+    positiveText: t("gpu.killBtn"),
+    negativeText: t("common.cancel"),
     style: "color: #e88080",
     onPositiveClick: async () => {
       try {
         const out = await api.gpuKill(pid, p.pid);
         if (out.includes("NOT_OWNER")) {
-          message.error(`不是你的进程（属主 ${out.replace("NOT_OWNER", "").trim()}）`);
+          message.error(t("gpu.notOwner", { owner: out.replace("NOT_OWNER", "").trim() }));
         } else if (out.includes("PROC_GONE")) {
-          message.info("进程已不存在");
+          message.info(t("gpu.procGone"));
         } else {
-          message.success(`已结束: ${out.split("\n").join(" / ")}`);
+          message.success(t("gpu.killed", { out: out.split("\n").join(" / ") }));
         }
         refresh();
       } catch (e: any) {
-        message.error(`结束失败: ${e?.message ?? JSON.stringify(e)}`);
+        message.error(t("gpu.killFailed", { msg: e?.message ?? JSON.stringify(e) }));
       }
     },
   });
 }
 
-const procColumns: DataTableColumns<GpuProcRow> = [
+const procColumns = computed<DataTableColumns<GpuProcRow>>(() => [
   { title: "GPU", key: "gpu", width: 60 },
   { title: "PID", key: "pid", width: 90 },
   {
-    title: "属主",
+    title: t("gpu.colOwner"),
     key: "user",
     width: 140,
-    render: (r) => (r.mine ? `${r.user}（我）` : r.user || "-"),
+    render: (r) => (r.mine ? t("gpu.ownerMe", { u: r.user }) : r.user || "-"),
   },
-  { title: "进程", key: "name", ellipsis: { tooltip: true } },
-  { title: "运行时长", key: "elapsed", width: 120 },
+  { title: t("gpu.colProcess"), key: "name", ellipsis: { tooltip: true } },
+  { title: t("gpu.colElapsed"), key: "elapsed", width: 120 },
   {
-    title: "显存",
+    title: t("gpu.colMem"),
     key: "memMb",
     width: 110,
     render: (r) => (r.memMb != null ? `${r.memMb} MiB` : "-"),
   },
   {
-    title: "操作",
+    title: t("gpu.colActions"),
     key: "actions",
     width: 90,
     render: (r) =>
@@ -150,13 +156,13 @@ const procColumns: DataTableColumns<GpuProcRow> = [
           type: "error",
           ghost: true,
           disabled: !r.mine,
-          title: r.mine ? "结束进程" : "只能结束自己的进程",
+          title: r.mine ? t("gpu.killTitle") : t("gpu.killOnlyMine"),
           onClick: () => killProc(r),
         },
-        { default: () => "结束" },
+        { default: () => t("gpu.killBtn") },
       ),
   },
-];
+]);
 
 // ---------- 设置修改（persistence / 功耗，sudo） ----------
 const setPreviewShow = ref(false);
@@ -181,7 +187,7 @@ async function runSetTask(taskId: string) {
       logText.value += c.data;
     },
     (d) => {
-      logText.value += `\n[退出码 ${d.exitCode}]\n`;
+      logText.value += `\n${t("common.exitCode", { code: d.exitCode })}\n`;
       logDone.value = d.exitCode;
     },
   );
@@ -190,7 +196,7 @@ async function runSetTask(taskId: string) {
 async function startSet(action: string, gpu: number | null, value: number) {
   const pid = current.value?.id;
   if (!pid) return;
-  setActionTitle.value = SET_TITLES[action] ?? "调整 GPU 设置";
+  setActionTitle.value = SET_TITLES[action]?.(t) ?? t("gpu.titleDefault");
   try {
     const mode = await api.sudoModeCheck(pid);
     setScript.value = await api.gpuSetPreview(mode, action, gpu, value);
@@ -199,7 +205,7 @@ async function startSet(action: string, gpu: number | null, value: number) {
         const taskId = await api.gpuSetStart(pid, action, gpu, value, password);
         await runSetTask(taskId);
       } catch (e: any) {
-        message.error(`启动失败: ${e?.message ?? JSON.stringify(e)}`);
+        message.error(t("common.startFailedMsg", { msg: e?.message ?? JSON.stringify(e) }));
       }
     };
     setPending.value = () => {
@@ -208,7 +214,7 @@ async function startSet(action: string, gpu: number | null, value: number) {
         passErr.value = "";
         setPending.value = () => {
           if (!pass.value.trim()) {
-            passErr.value = "请输入 sudo 密码";
+            passErr.value = t("docker.passRequired");
             return;
           }
           passShow.value = false;
@@ -221,7 +227,7 @@ async function startSet(action: string, gpu: number | null, value: number) {
     };
     setPreviewShow.value = true;
   } catch (e: any) {
-    message.error(`获取命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("gpu.getCmdFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -250,7 +256,7 @@ function togglePersistence(c: MergedCard, on: boolean) {
 function applyPower(c: MergedCard) {
   const v = powerDrafts.value[c.index];
   if (v == null) {
-    message.warning("请先拖动选择功耗上限");
+    message.warning(t("gpu.powerFirst"));
     return;
   }
   void startSet("pl", c.index, v);
@@ -263,8 +269,11 @@ function powerRange(c: MergedCard): [number, number] {
   return [min, max];
 }
 
-const SET_TITLES: Record<string, string> = { pm: "切换 Persistence Mode", pl: "调整功耗上限" };
-const setActionTitle = ref("调整 GPU 设置");
+const SET_TITLES: Record<string, (t: (k: string) => string) => string> = {
+  pm: (t) => t("gpu.titlePm"),
+  pl: (t) => t("gpu.titlePl"),
+};
+const setActionTitle = ref(t("gpu.titleDefault"));
 
 onMounted(() => {
   void settingsStore.load();
@@ -279,20 +288,20 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <n-space justify="space-between" align="center" style="margin-bottom: 16px">
-      <h2 style="margin: 0">GPU 管理</h2>
+      <h2 style="margin: 0">{{ t("gpu.title") }}</h2>
       <n-space size="small">
         <n-tag v-if="mergedCards.length" size="small">
-          驱动 {{ mergedCards[0].driver || "-" }}
+          {{ t("gpu.driverTag", { v: mergedCards[0].driver || "-" }) }}
         </n-tag>
-        <n-button size="small" :loading="loading" @click="refresh">重新检测</n-button>
+        <n-button size="small" :loading="loading" @click="refresh">{{ t("gpu.redetect") }}</n-button>
       </n-space>
     </n-space>
 
     <n-result
       v-if="!current"
       status="404"
-      title="未连接服务器"
-      description="请先连接服务器"
+      :title="t('common.notConnected')"
+      :description="t('common.notConnectedDesc')"
     />
 
     <n-space v-else vertical :size="16">
@@ -307,26 +316,26 @@ onBeforeUnmount(() => {
                 :type="c.persistence ? 'success' : 'default'"
                 style="margin-left: 8px"
               >
-                persistence {{ c.persistence ? "开" : "关" }}
+                persistence {{ c.persistence ? t("common.on") : t("common.off") }}
               </n-tag>
               <n-tag v-if="c.throttleReasons.length" size="tiny" type="warning" style="margin-left: 4px">
-                降频中
+                {{ t("gpu.throttling") }}
               </n-tag>
             </template>
             <div class="gpu-meta">
-              <span v-if="c.serial">序列号 {{ c.serial }}</span>
+              <span v-if="c.serial">{{ t("gpu.serial") }} {{ c.serial }}</span>
               <span v-if="c.vbios">VBIOS {{ c.vbios }}</span>
               <span v-if="c.pcie">{{ c.pcie }}</span>
-              <span v-if="c.computeMode">计算模式 {{ c.computeMode }}</span>
-              <span v-if="c.ecc != null">ECC {{ c.ecc ? "开" : "关" }}</span>
+              <span v-if="c.computeMode">{{ t("gpu.computeMode") }} {{ c.computeMode }}</span>
+              <span v-if="c.ecc != null">ECC {{ c.ecc ? t("common.on") : t("common.off") }}</span>
               <span v-if="c.eccInfo?.corrected != null">
-                ECC 易失错误 {{ c.eccInfo.corrected }}/{{ c.eccInfo.uncorrected ?? 0 }}
+                {{ t("gpu.eccErrors") }} {{ c.eccInfo.corrected }}/{{ c.eccInfo.uncorrected ?? 0 }}
               </span>
             </div>
             <div class="stat-row">
               <div class="stat-cell">
                 <div class="num">{{ c.stat?.util ?? "-" }}<small>%</small></div>
-                <div class="cap">利用率</div>
+                <div class="cap">{{ t("gpu.capUtil") }}</div>
               </div>
               <div class="stat-cell">
                 <n-progress
@@ -344,15 +353,15 @@ onBeforeUnmount(() => {
               </div>
               <div class="stat-cell">
                 <div class="num">{{ c.stat?.tempC ?? "-" }}<small>°C</small></div>
-                <div class="cap">温度</div>
+                <div class="cap">{{ t("gpu.capTemp") }}</div>
               </div>
               <div class="stat-cell">
                 <div class="num">{{ c.stat?.powerW ?? "-" }}<small>W</small></div>
-                <div class="cap">功耗 / {{ c.stat?.powerLimitW ?? "-" }}W</div>
+                <div class="cap">{{ t("gpu.capPower", { limit: c.stat?.powerLimitW ?? "-" }) }}</div>
               </div>
               <div class="stat-cell">
                 <div class="num">{{ c.stat?.smClockMhz ?? "-" }}</div>
-                <div class="cap">SM MHz / 最大 {{ c.stat?.smClockMaxMhz ?? "-" }}</div>
+                <div class="cap">{{ t("gpu.capSm", { max: c.stat?.smClockMaxMhz ?? "-" }) }}</div>
               </div>
             </div>
             <div v-if="c.throttleReasons.length" class="throttle">
@@ -365,12 +374,12 @@ onBeforeUnmount(() => {
       </n-grid>
       <n-empty
         v-else-if="!loading"
-        description="未检测到 GPU（驱动未安装或 nvidia-smi 不可用）"
+        :description="t('gpu.noGpu')"
         style="padding: 24px 0"
       />
 
       <!-- GPU 进程 -->
-      <n-card size="small" title="GPU 进程">
+      <n-card size="small" :title="t('gpu.procsCard')">
         <n-data-table
           v-if="result?.procs.length"
           :columns="procColumns"
@@ -379,11 +388,11 @@ onBeforeUnmount(() => {
           size="small"
           :max-height="260"
         />
-        <n-empty v-else description="当前没有占用 GPU 的进程" style="padding: 12px 0" />
+        <n-empty v-else :description="t('dashboard.noProcs')" style="padding: 12px 0" />
       </n-card>
 
       <!-- 运维设置 -->
-      <n-card size="small" title="运维设置（需要 sudo）">
+      <n-card size="small" :title="t('gpu.opsCard')">
         <div v-for="c in mergedCards" :key="c.index" class="set-row">
           <span class="set-label">GPU {{ c.index }}</span>
           <n-space align="center" :size="8">
@@ -395,7 +404,7 @@ onBeforeUnmount(() => {
             />
           </n-space>
           <n-space align="center" :size="8" class="power-box">
-            <span class="set-cap">功耗上限</span>
+            <span class="set-cap">{{ t("gpu.powerLimit") }}</span>
             <n-slider
               :value="powerDrafts[c.index] ?? Math.round(c.stat?.powerLimitW ?? 0)"
               :min="powerRange(c)[0]"
@@ -414,12 +423,14 @@ onBeforeUnmount(() => {
               @update:value="(v: number | null) => v != null && (powerDrafts[c.index] = v)"
             />
             <span class="set-cap" v-if="c.stat?.powerDefaultW">
-              默认 {{ Math.round(c.stat.powerDefaultW) }}W
+              {{ t("gpu.powerDefault", { v: Math.round(c.stat.powerDefaultW) }) }}
             </span>
-            <n-button size="tiny" type="primary" ghost @click="applyPower(c)">应用</n-button>
+            <n-button size="tiny" type="primary" ghost @click="applyPower(c)">{{ t("gpu.apply") }}</n-button>
           </n-space>
         </div>
-        <div v-if="!mergedCards.length" class="set-cap" style="padding: 8px 0">无可用 GPU</div>
+        <div v-if="!mergedCards.length" class="set-cap" style="padding: 8px 0">
+          {{ t("gpu.noGpuAvail") }}
+        </div>
       </n-card>
 
     </n-space>
@@ -428,7 +439,7 @@ onBeforeUnmount(() => {
     <n-card
       v-if="current && result?.topo"
       size="small"
-      title="GPU 拓扑（nvidia-smi topo -m）"
+      :title="t('gpu.topoCard')"
       style="margin-top: 16px"
     >
       <pre class="topo">{{ result.topo }}</pre>
@@ -436,12 +447,12 @@ onBeforeUnmount(() => {
 
     <!-- 设置命令预览 -->
     <n-modal v-model:show="setPreviewShow" preset="card" :title="setActionTitle" style="width: 620px">
-      <p style="margin-top: 0; color: #999; font-size: 13px">将在服务器执行：</p>
+      <p style="margin-top: 0; color: #999; font-size: 13px">{{ t("gpu.execHint") }}</p>
       <pre class="glog" style="height: 140px">{{ setScript }}</pre>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="setPreviewShow = false">取消</n-button>
-          <n-button type="primary" @click="confirmSet">执行</n-button>
+          <n-button @click="setPreviewShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="confirmSet">{{ t("gpu.exec") }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -450,26 +461,26 @@ onBeforeUnmount(() => {
     <n-modal
       v-model:show="passShow"
       preset="card"
-      title="需要 sudo 密码"
+      :title="t('docker.passTitle')"
       style="width: 440px"
       :mask-closable="false"
     >
       <p style="margin-top: 0; color: #999; font-size: 13px">
-        当前用户无免密 sudo 权限，请输入该用户的 sudo 密码（仅本次使用，不会保存）。
+        {{ t("docker.passDesc") }}
       </p>
       <n-input
         v-model:value="pass"
         type="password"
         show-password-on="click"
-        placeholder="sudo 密码"
+        :placeholder="t('docker.passPh')"
         :status="passErr ? 'error' : undefined"
         @keyup.enter="confirmPass"
       />
       <div v-if="passErr" class="pass-err">{{ passErr }}</div>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="passShow = false">取消</n-button>
-          <n-button type="primary" @click="confirmPass">确定</n-button>
+          <n-button @click="passShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="confirmPass">{{ t("common.ok") }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -478,18 +489,18 @@ onBeforeUnmount(() => {
     <n-modal
       :show="logShow"
       preset="card"
-      :title="setActionTitle + ' 日志'"
+      :title="setActionTitle + ' ' + t('gpu.logSuffix')"
       style="width: 720px"
       :mask-closable="false"
       @close="closeLog"
     >
-      <pre class="glog">{{ logText || "(等待输出...)" }}</pre>
+      <pre class="glog">{{ logText || t("stream.waiting") }}</pre>
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="logDone != null" :type="logDone === 0 ? 'success' : 'error'">
-          退出码 {{ logDone }}
+          {{ t("docker.exitCode", { code: logDone }) }}
         </n-tag>
         <n-button v-if="logDone != null" type="primary" @click="closeLog">
-          {{ logDone === 0 ? "完成" : "关闭" }}
+          {{ logDone === 0 ? t("docker.done") : t("common.close") }}
         </n-button>
       </n-space>
     </n-modal>

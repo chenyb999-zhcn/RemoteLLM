@@ -15,14 +15,18 @@ import {
   NSpace,
   NTag,
   darkTheme,
+  dateEnUS,
   dateZhCN,
+  enUS,
   zhCN,
 } from "naive-ui";
+import { useI18n } from "vue-i18n";
 import { useRouter, useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import { useServerStore } from "./stores/server";
 import { useDashboardStore } from "./stores/dashboard";
 import { useSettingsStore } from "./stores/settings";
+import { i18n } from "./i18n";
 import { api, onTaskStream, startTaskBus } from "./lib/api";
 import DockerInstaller from "./components/DockerInstaller.vue";
 import StreamLog from "./components/StreamLog.vue";
@@ -34,8 +38,24 @@ const dash = useDashboardStore();
 const settings = useSettingsStore();
 const router = useRouter();
 const route = useRoute();
+const { t } = useI18n();
 
 const theme = computed(() => (settings.value.darkTheme ? darkTheme : null));
+
+// 语言：设置持久化值 → i18n 实例（驱动全部 t() 文案与 naive-ui 组件文案）
+watch(
+  () => settings.value.language,
+  (lang) => {
+    if (lang === "en" || lang === "zh") i18n.global.locale.value = lang;
+  },
+  { immediate: true },
+);
+const naiveLocale = computed(() => (settings.value.language === "en" ? enUS : zhCN));
+const naiveDateLocale = computed(() =>
+  settings.value.language === "en" ? dateEnUS : dateZhCN,
+);
+/** 列表连接符（中文全角逗号 / 英文逗号+空格） */
+const listSep = computed(() => (settings.value.language === "en" ? ", " : "，"));
 
 void startTaskBus();
 
@@ -114,7 +134,7 @@ async function onDockerSuccess() {
     await store.disconnect();
     await store.connect(p);
   } catch (e: any) {
-    window.alert(`Docker 处理完成后重连失败: ${e?.message ?? JSON.stringify(e)}`);
+    window.alert(t("app.reconnectFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -169,7 +189,7 @@ async function runToolInstalls(id: string, tools: string[]) {
             toolInstallLog.value += c.data;
           },
           (d) => {
-            toolInstallLog.value += `\n[退出码 ${d.exitCode}]\n`;
+            toolInstallLog.value += `\n${t("common.exitCode", { code: d.exitCode })}\n`;
             toolInstallDone.value = d.exitCode;
             resolve();
           },
@@ -180,7 +200,7 @@ async function runToolInstalls(id: string, tools: string[]) {
           .catch(() => resolve());
       });
     } catch (e: any) {
-      toolInstallLog.value += `\n[启动失败: ${e?.message ?? JSON.stringify(e)}]\n`;
+      toolInstallLog.value += `\n${t("common.startFailed", { msg: e?.message ?? JSON.stringify(e) })}\n`;
     }
   }
 }
@@ -206,48 +226,48 @@ function icon(path: string) {
     );
 }
 
-const menuOptions = [
+const menuOptions = computed(() => [
   {
-    label: "总览",
+    label: t("app.menu.dashboard"),
     key: "dashboard",
     icon: icon(
       "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z",
     ),
   },
   {
-    label: "环境检查",
+    label: t("app.menu.init"),
     key: "init",
     icon: icon(
       "M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8.7 14.3-3.6-3.6 1.4-1.4 2.2 2.2 5.2-5.2 1.4 1.4-6.6 6.6zM9 8c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2z",
     ),
   },
   {
-    label: "GPU 管理",
+    label: t("app.menu.gpu"),
     key: "gpu",
     icon: icon(
       "M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z",
     ),
   },
   {
-    label: "框架管理",
+    label: t("app.menu.frameworks"),
     key: "frameworks",
     icon: icon("M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"),
   },
   {
-    label: "模型管理",
+    label: t("app.menu.models"),
     key: "models",
     icon: icon(
       "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 17.93c-1.33 0-2.63-.27-3.81-.78-.15-.07-.28-.18-.35-.32-.13-.26-.06-.57.16-.75 1.32-1.08 2.72-2.03 4.23-2.8.3-.15.67-.15.97 0 1.51.77 2.91 1.72 4.23 2.8.22.18.29.49.16.75-.07.14-.2.25-.35.32-1.18.51-2.48.78-3.81.78z",
     ),
   },
   {
-    label: "设置",
+    label: t("app.menu.settings"),
     key: "settings",
     icon: icon(
       "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.88c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
     ),
   },
-];
+]);
 
 const selectedKey = computed(() => {
   const p = route.path;
@@ -283,7 +303,7 @@ async function onSwitch(id: string) {
     await store.connect(p);
     router.push(`/s/${id}`);
   } catch (e: any) {
-    window.alert(`连接失败: ${e?.message ?? JSON.stringify(e)}`);
+    window.alert(t("app.connectFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -294,7 +314,7 @@ async function onDisconnect() {
 </script>
 
 <template>
-  <n-config-provider :theme="theme" :locale="zhCN" :date-locale="dateZhCN">
+  <n-config-provider :theme="theme" :locale="naiveLocale" :date-locale="naiveDateLocale">
     <n-message-provider>
       <n-dialog-provider>
         <router-view v-if="!current" />
@@ -321,7 +341,7 @@ async function onDisconnect() {
                   :loading="connecting"
                   @click="onDisconnect"
                 >
-                  断开
+                  {{ t("app.disconnect") }}
                 </n-button>
               </n-space>
             </n-layout-header>
@@ -335,17 +355,19 @@ async function onDisconnect() {
         <n-modal
           :show="toolCheckShow"
           preset="card"
-          title="未安装下载工具"
+          :title="t('app.toolMissingTitle')"
           style="width: 460px"
           :mask-closable="false"
         >
           <p style="margin: 0">
-            服务器上缺少：{{ toolCheckMissing.join("，") }}。是否现在安装？
+            {{ t("app.toolMissingText", { tools: toolCheckMissing.join(listSep) }) }}
           </p>
           <template #footer>
             <n-space justify="end">
-              <n-button @click="toolCheckShow = false">暂不</n-button>
-              <n-button type="primary" @click="confirmToolInstall">安装</n-button>
+              <n-button @click="toolCheckShow = false">{{ t("common.later") }}</n-button>
+              <n-button type="primary" @click="confirmToolInstall">
+                {{ t("common.install") }}
+              </n-button>
             </n-space>
           </template>
         </n-modal>
@@ -354,7 +376,7 @@ async function onDisconnect() {
         <n-modal
           :show="toolInstallShow"
           preset="card"
-          title="安装下载工具"
+          :title="t('app.toolInstallTitle')"
           style="width: 720px"
           :mask-closable="false"
           @close="closeToolInstall"
@@ -365,10 +387,10 @@ async function onDisconnect() {
               v-if="toolInstallDone != null"
               :type="toolInstallDone === 0 ? 'success' : 'error'"
             >
-              最后退出码 {{ toolInstallDone }}
+              {{ t("app.lastExitCode", { code: toolInstallDone }) }}
             </n-tag>
             <n-button v-if="toolInstallDone != null" type="primary" @click="closeToolInstall">
-              关闭
+              {{ t("common.close") }}
             </n-button>
           </n-space>
         </n-modal>

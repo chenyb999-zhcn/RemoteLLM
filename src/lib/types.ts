@@ -24,6 +24,8 @@ export interface AppSettings {
   lastProfileId: string;
   autoConnect: boolean;
   darkTheme: boolean;
+  /** UI 语言：zh | en */
+  language: string;
   proxyEnabled: boolean;
   proxyUrl: string;
   /** pip 镜像源 id：tuna/aliyun/ustc/huawei/tencent/pypi */

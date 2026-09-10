@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { useI18n } from "vue-i18n";
+
+const { t } = useI18n();
 
 const props = withDefaults(
   defineProps<{
@@ -8,7 +11,7 @@ const props = withDefaults(
     autoScroll?: boolean;
     placeholder?: string;
   }>(),
-  { maxHeight: "60vh", autoScroll: true, placeholder: "(等待输出...)" }
+  { maxHeight: "60vh", autoScroll: true, placeholder: "" }
 );
 
 const emit = defineEmits<{
@@ -75,7 +78,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <pre ref="el" class="stream-log" :style="{ maxHeight }">{{ text || placeholder }}</pre>
+  <pre ref="el" class="stream-log" :style="{ maxHeight }">{{ text || (placeholder || t("stream.waiting")) }}</pre>
 </template>
 
 <style scoped>

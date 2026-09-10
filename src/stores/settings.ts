@@ -11,6 +11,7 @@ const DEFAULTS: AppSettings = {
   lastProfileId: "",
   autoConnect: false,
   darkTheme: true,
+  language: "zh",
   proxyEnabled: false,
   proxyUrl: "",
   pipIndex: "tuna",

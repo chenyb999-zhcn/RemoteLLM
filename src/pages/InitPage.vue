@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   NButton,
   NCard,
@@ -11,6 +11,7 @@ import {
   NTag,
   useMessage,
 } from "naive-ui";
+import { useI18n } from "vue-i18n";
 import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { useServerStore } from "../stores/server";
@@ -26,28 +27,29 @@ const settingsStore = useSettingsStore();
 const { value: settings } = storeToRefs(settingsStore);
 const message = useMessage();
 const router = useRouter();
+const { t } = useI18n();
 
 const result = ref<InitCheckResult | null>(null);
 const loading = ref(false);
 
-const GROUPS = [
-  { key: "sys", label: "基础系统" },
-  { key: "gpu", label: "GPU 驱动" },
-  { key: "cuda", label: "CUDA 库" },
-  { key: "docker", label: "Docker 与 GPU 运行时" },
-  { key: "tools", label: "模型工具" },
-  { key: "engine", label: "推理引擎" },
-];
+const GROUPS = computed(() => [
+  { key: "sys", label: t("init.groupSys") },
+  { key: "gpu", label: t("init.groupGpu") },
+  { key: "cuda", label: t("init.groupCuda") },
+  { key: "docker", label: t("init.groupDocker") },
+  { key: "tools", label: t("init.groupTools") },
+  { key: "engine", label: t("init.groupEngine") },
+]);
 
-const FIX_LABEL: Record<string, string> = {
-  modelscope: "安装 modelscope",
-  huggingface: "安装 hf-cli",
-  "parser-libs": "安装解析库",
-  "docker-install": "安装 Docker",
-  "docker-authorize": "授权",
-  "docker-proxy": "配置 daemon 代理",
-  "goto-frameworks": "去框架管理添加",
-  apt: "安装",
+const FIX_I18N: Record<string, string> = {
+  modelscope: "init.fixModelscope",
+  huggingface: "init.fixHf",
+  "parser-libs": "init.fixParser",
+  "docker-install": "init.fixDockerInstall",
+  "docker-authorize": "init.fixDockerAuth",
+  "docker-proxy": "init.fixDockerProxy",
+  "goto-frameworks": "init.fixGotoFw",
+  apt: "init.fixApt",
 };
 
 function groupItems(key: string): InitItem[] {
@@ -56,10 +58,8 @@ function groupItems(key: string): InitItem[] {
 
 // docker-install 按钮文案：Docker 已装、仅缺 GPU 运行时 → 更精确的提示
 function fixLabel(it: InitItem): string {
-  if (it.fix === "docker-install" && it.id === "docker.gpu") {
-    return "安装 GPU 容器运行时";
-  }
-  return FIX_LABEL[it.fix ?? ""] ?? "修复";
+  if (it.fix === "docker-install" && it.id === "docker.gpu") return t("init.fixGpuRuntime");
+  return t(FIX_I18N[it.fix ?? ""] ?? "init.fixDefault");
 }
 
 async function refresh() {
@@ -69,7 +69,7 @@ async function refresh() {
   try {
     result.value = await api.serverInitCheck(pid);
   } catch (e: any) {
-    message.error(`环境检查失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.checkFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
     loading.value = false;
   }
@@ -83,24 +83,24 @@ function stateTagType(s: string): "success" | "warning" | "error" | "default" {
 }
 
 function stateText(s: string): string {
-  if (s === "ok") return "就绪";
-  if (s === "warn") return "建议";
-  if (s === "missing") return "缺失";
-  return "信息";
+  if (s === "ok") return t("init.stateOk");
+  if (s === "warn") return t("init.stateWarn");
+  if (s === "missing") return t("init.stateMissing");
+  return t("init.stateInfo");
 }
 
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text);
-    message.success("已复制");
+    message.success(t("common.copied"));
   } catch {
-    message.error("复制失败，请手动选择复制");
+    message.error(t("init.copyFailed"));
   }
 }
 
 // ---------- 通用日志弹框（pip 安装 / apt 安装共用） ----------
 const logShow = ref(false);
-const logTitle = ref("安装日志");
+const logTitle = ref("");
 const logText = ref("");
 const logDone = ref<number | null>(null);
 const cancelLog = ref<null | (() => Promise<void>)>(null);
@@ -116,7 +116,7 @@ async function runTask(taskId: string, title: string) {
       logText.value += c.data;
     },
     (d) => {
-      logText.value += `\n[退出码 ${d.exitCode}]\n`;
+      logText.value += `\n${t("common.exitCode", { code: d.exitCode })}\n`;
       logDone.value = d.exitCode;
     },
   );
@@ -142,7 +142,7 @@ async function askInstall(tool: string) {
     installTool.value = tool;
     installShow.value = true;
   } catch (e: any) {
-    message.error(`获取安装命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.getCmdFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -152,9 +152,9 @@ async function onInstallConfirm() {
   installShow.value = false;
   try {
     const taskId = await api.installStart(pid, installTool.value);
-    await runTask(taskId, "安装日志");
+    await runTask(taskId, t("init.installLog"));
   } catch (e: any) {
-    message.error(`启动安装失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.startInstallFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -177,7 +177,7 @@ async function askApt(pkgs: string[]) {
     aptPkgs.value = pkgs;
     aptShow.value = true;
   } catch (e: any) {
-    message.error(`获取安装命令失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.getCmdFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
@@ -199,15 +199,15 @@ async function runApt(password: string | null) {
   if (!pid) return;
   try {
     const taskId = await api.aptInstallStart(pid, aptPkgs.value, password);
-    await runTask(taskId, `apt 安装 ${aptPkgs.value.join(" ")}`);
+    await runTask(taskId, t("init.aptLog", { pkgs: aptPkgs.value.join(" ") }));
   } catch (e: any) {
-    message.error(`启动安装失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.startInstallFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
 function confirmPass() {
   if (!pass.value.trim()) {
-    passErr.value = "请输入 sudo 密码";
+    passErr.value = t("docker.passRequired");
     return;
   }
   passShow.value = false;
@@ -224,7 +224,7 @@ async function askDocker(kind: "install" | "authorize" | "proxy") {
   try {
     st = await api.checkDocker(pid);
   } catch (e: any) {
-    message.error(`无法获取 docker 状态: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("init.dockerStatusFailed", { msg: e?.message ?? JSON.stringify(e) }));
     return;
   }
   if (kind === "install") dockerInstallerRef.value?.askInstall(pid, st);
@@ -232,7 +232,7 @@ async function askDocker(kind: "install" | "authorize" | "proxy") {
   else {
     const url = settings.value.proxyUrl.trim();
     if (!url) {
-      message.warning("全局代理未配置地址，请先在设置页填写");
+      message.warning(t("init.proxyNotSet"));
       return;
     }
     dockerInstallerRef.value?.askProxy(pid, st, url);
@@ -276,22 +276,22 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <n-space justify="space-between" align="center" style="margin-bottom: 16px">
-      <h2 style="margin: 0">环境检查</h2>
+      <h2 style="margin: 0">{{ t("init.title") }}</h2>
       <n-space size="small">
         <template v-if="result">
-          <n-tag type="success" size="small">就绪 {{ result.okCount }}</n-tag>
-          <n-tag type="warning" size="small">建议 {{ result.warnCount }}</n-tag>
-          <n-tag type="error" size="small">缺失 {{ result.missingCount }}</n-tag>
+          <n-tag type="success" size="small">{{ t("init.okCount", { n: result.okCount }) }}</n-tag>
+          <n-tag type="warning" size="small">{{ t("init.warnCount", { n: result.warnCount }) }}</n-tag>
+          <n-tag type="error" size="small">{{ t("init.missingCount", { n: result.missingCount }) }}</n-tag>
         </template>
-        <n-button size="small" :loading="loading" @click="refresh">重新检测</n-button>
+        <n-button size="small" :loading="loading" @click="refresh">{{ t("gpu.redetect") }}</n-button>
       </n-space>
     </n-space>
 
     <n-result
       v-if="!current"
       status="404"
-      title="未连接服务器"
-      description="请先连接服务器"
+      :title="t('common.notConnected')"
+      :description="t('common.notConnectedDesc')"
     />
 
     <n-space v-else-if="result" vertical :size="16">
@@ -320,13 +320,13 @@ onBeforeUnmount(() => {
               quaternary
               @click="copyText(it.manual)"
             >
-              复制命令
+              {{ t("common.copyCmd") }}
             </n-button>
           </n-space>
         </div>
         <n-empty
           v-if="!groupItems(g.key).length"
-          description="无检查项"
+          :description="t('init.noItems')"
           style="padding: 12px 0"
         />
       </n-card>
@@ -334,32 +334,32 @@ onBeforeUnmount(() => {
 
     <n-empty
       v-else-if="!loading"
-      description="点击「重新检测」开始检查"
+      :description="t('init.startCheck')"
       style="padding: 32px 0"
     />
 
     <!-- pip 安装确认 -->
-    <n-modal v-model:show="installShow" preset="card" title="安装工具" style="width: 620px">
-      <p style="margin-top: 0; color: #999; font-size: 13px">将在服务器执行：</p>
+    <n-modal v-model:show="installShow" preset="card" :title="t('init.installModalTitle')" style="width: 620px">
+      <p style="margin-top: 0; color: #999; font-size: 13px">{{ t("gpu.execHint") }}</p>
       <StreamLog :text="installScript" max-height="120px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="installShow = false">取消</n-button>
-          <n-button type="primary" @click="onInstallConfirm">开始安装</n-button>
+          <n-button @click="installShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="onInstallConfirm">{{ t("init.startInstall") }}</n-button>
         </n-space>
       </template>
     </n-modal>
 
     <!-- apt 安装确认 -->
-    <n-modal v-model:show="aptShow" preset="card" title="安装基础工具（apt）" style="width: 620px">
+    <n-modal v-model:show="aptShow" preset="card" :title="t('init.aptModalTitle')" style="width: 620px">
       <p style="margin-top: 0; color: #999; font-size: 13px">
-        将以 sudo 在服务器执行（仅限白名单包 curl/git/build-essential/cmake）：
+        {{ t("init.aptModalHint") }}
       </p>
       <StreamLog :text="aptScript" max-height="140px" :auto-scroll="false" />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="aptShow = false">取消</n-button>
-          <n-button type="primary" @click="onAptConfirm">开始安装</n-button>
+          <n-button @click="aptShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="onAptConfirm">{{ t("init.startInstall") }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -368,26 +368,26 @@ onBeforeUnmount(() => {
     <n-modal
       v-model:show="passShow"
       preset="card"
-      title="需要 sudo 密码"
+      :title="t('docker.passTitle')"
       style="width: 440px"
       :mask-closable="false"
     >
       <p style="margin-top: 0; color: #999; font-size: 13px">
-        当前用户无免密 sudo 权限，请输入该用户的 sudo 密码（仅本次使用，不会保存）。
+        {{ t("docker.passDesc") }}
       </p>
       <n-input
         v-model:value="pass"
         type="password"
         show-password-on="click"
-        placeholder="sudo 密码"
+        :placeholder="t('docker.passPh')"
         :status="passErr ? 'error' : undefined"
         @keyup.enter="confirmPass"
       />
       <div v-if="passErr" class="pass-err">{{ passErr }}</div>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="passShow = false">取消</n-button>
-          <n-button type="primary" @click="confirmPass">确定</n-button>
+          <n-button @click="passShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="confirmPass">{{ t("common.ok") }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -404,10 +404,10 @@ onBeforeUnmount(() => {
       <StreamLog :text="logText" />
       <n-space justify="end" style="margin-top: 12px">
         <n-tag v-if="logDone != null" :type="logDone === 0 ? 'success' : 'error'">
-          退出码 {{ logDone }}
+          {{ t("docker.exitCode", { code: logDone }) }}
         </n-tag>
         <n-button v-if="logDone != null" type="primary" @click="closeLog">
-          {{ logDone === 0 ? "完成" : "关闭" }}
+          {{ logDone === 0 ? t("docker.done") : t("common.close") }}
         </n-button>
       </n-space>
     </n-modal>

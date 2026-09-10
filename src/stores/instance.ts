@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { api } from "../lib/api";
+import { i18n } from "../i18n";
 import type {
   FwDetect,
   InstanceConfig,
@@ -98,7 +99,7 @@ export const useInstanceStore = defineStore("instances", {
         this.logTotalLines = total;
         this.logs = text;
       } catch (e: any) {
-        this.logs = `加载日志失败: ${e?.message ?? JSON.stringify(e)}`;
+        this.logs = i18n.global.t("fw.loadLogFailed", { msg: e?.message ?? JSON.stringify(e) });
       } finally {
         this.logsLoading = false;
       }
@@ -119,7 +120,7 @@ export const useInstanceStore = defineStore("instances", {
         this.logs = text;
         return hasMore;
       } catch (e: any) {
-        this.logs = `加载日志失败: ${e?.message ?? JSON.stringify(e)}`;
+        this.logs = i18n.global.t("fw.loadLogFailed", { msg: e?.message ?? JSON.stringify(e) });
         return false;
       } finally {
         this.loadingEarlier = false;

@@ -113,7 +113,7 @@ npm run tauri build -- --bundles nsis   # package
 
 ## Notes
 
-- **V100 (sm70) users**: recent official vLLM releases no longer support sm70 — use 1Cat-vLLM instead (a vLLM fork with SM70 support), default image `ghcr.io/chenyb999-zhcn/1cat-vllm:1.5`
+- **V100 (sm70) users**: recent official vLLM releases no longer support sm70 — use [1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM) instead (a vLLM fork with SM70 support), default image `ghcr.io/chenyb999-zhcn/1cat-vllm:1.5`
 - **sudo operations**: use the password flow — passwords are used once and never stored; passwordless sudo or root login on the server makes this seamless
 - **Proxy**: once the download proxy is enabled in Settings, model downloads / pip / git clone go through it; if the Docker daemon proxy mismatches during an image pull, the app guides you through reconfiguring it (docker restarts, running containers are interrupted)
 - **Credential safety**: SSH passwords / key paths and HF tokens are stored only in the local app data directory (JSON) and never uploaded anywhere

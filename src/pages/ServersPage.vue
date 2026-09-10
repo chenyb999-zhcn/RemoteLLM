@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h, onMounted, reactive, ref } from "vue";
+import { h, computed, onMounted, reactive, ref } from "vue";
 import {
   NButton,
   NCard,
@@ -17,6 +17,7 @@ import {
   type FormRules,
   type DataTableColumns,
 } from "naive-ui";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 import { useServerStore } from "../stores/server";
@@ -26,6 +27,7 @@ const store = useServerStore();
 const { profiles, currentId, connecting } = storeToRefs(store);
 const router = useRouter();
 const message = useMessage();
+const { t } = useI18n();
 
 const showModal = ref(false);
 const editingId = ref<string | null>(null);
@@ -47,15 +49,15 @@ const form = reactive({
   advanced: false,
 });
 
-const rules: FormRules = {
-  name: [{ required: true, message: "请输入名称", trigger: "blur" }],
-  host: [{ required: true, message: "请输入 IP 或域名", trigger: "blur" }],
-  user: [{ required: true, message: "请输入用户名", trigger: "blur" }],
+const rules = computed<FormRules>(() => ({
+  name: [{ required: true, message: t("servers.reqName"), trigger: "blur" }],
+  host: [{ required: true, message: t("servers.reqHost"), trigger: "blur" }],
+  user: [{ required: true, message: t("servers.reqUser"), trigger: "blur" }],
   password: [
     {
       required: true,
       validator: (_r, v: string) =>
-        form.authType === "password" && !v ? new Error("请输入密码") : true,
+        form.authType === "password" && !v ? new Error(t("servers.reqPassword")) : true,
       trigger: "blur",
     },
   ],
@@ -63,11 +65,11 @@ const rules: FormRules = {
     {
       required: true,
       validator: (_r, v: string) =>
-        form.authType === "key" && !v ? new Error("请输入私钥文件路径") : true,
+        form.authType === "key" && !v ? new Error(t("servers.reqKeyPath")) : true,
       trigger: "blur",
     },
   ],
-};
+}));
 
 function openAdd() {
   editingId.value = null;
@@ -133,7 +135,7 @@ async function onSubmit() {
   const profile = buildProfile();
   await store.saveProfile(profile);
   showModal.value = false;
-  message.success("已保存");
+  message.success(t("servers.saved"));
   if (!editingId.value || editingId.value === profile.id) {
     // 新增时直接连接
     await doConnect(profile);
@@ -145,37 +147,37 @@ async function doConnect(p: ServerProfile) {
     await store.connect(p);
     router.push(`/s/${p.id}`);
   } catch (e: any) {
-    message.error(`连接失败: ${e?.message ?? JSON.stringify(e)}`);
+    message.error(t("app.connectFailed", { msg: e?.message ?? JSON.stringify(e) }));
   }
 }
 
 async function onDelete(p: ServerProfile) {
   await store.removeProfile(p.id);
-  message.success("已删除");
+  message.success(t("servers.deleted"));
 }
 
-const columns: DataTableColumns<ServerProfile> = [
-  { title: "名称", key: "name", width: 140 },
+const columns = computed<DataTableColumns<ServerProfile>>(() => [
+  { title: t("servers.colName"), key: "name", width: 140 },
   {
-    title: "地址",
+    title: t("servers.colAddr"),
     key: "host",
     render: (p) => `${p.host}:${p.port}`,
   },
-  { title: "用户", key: "user", width: 100 },
+  { title: t("servers.colUser"), key: "user", width: 100 },
   {
-    title: "认证",
+    title: t("servers.colAuth"),
     key: "auth",
     width: 90,
     render: (p) =>
       h(
         NTag,
         { size: "small", type: p.auth.type === "key" ? "info" : "default" },
-        { default: () => (p.auth.type === "key" ? "密钥" : "密码") },
+        { default: () => (p.auth.type === "key" ? t("servers.authKey") : t("servers.authPass")) },
       ),
   },
-  { title: "工作目录", key: "baseDir", width: 160, ellipsis: { tooltip: true } },
+  { title: t("servers.colWorkdir"), key: "baseDir", width: 160, ellipsis: { tooltip: true } },
   {
-    title: "操作",
+    title: t("servers.colActions"),
     key: "actions",
     width: 240,
     render: (p) =>
@@ -190,25 +192,30 @@ const columns: DataTableColumns<ServerProfile> = [
               loading: connecting.value && p.id === currentId.value,
               onClick: () => doConnect(p),
             },
-            { default: () => (p.id === currentId.value ? "已连接" : "连接") },
+            {
+              default: () =>
+                p.id === currentId.value ? t("servers.btnConnected") : t("servers.btnConnect"),
+            },
           ),
-          h(NButton, { size: "small", onClick: () => openEdit(p) }, { default: () => "编辑" }),
-          h(NButton, { size: "small", type: "error", onClick: () => onDelete(p) }, { default: () => "删除" }),
+          h(NButton, { size: "small", onClick: () => openEdit(p) }, { default: () => t("servers.btnEdit") }),
+          h(NButton, { size: "small", type: "error", onClick: () => onDelete(p) }, { default: () => t("servers.btnDelete") }),
         ],
       }),
   },
-];
+]);
 
 onMounted(() => store.loadProfiles());
 </script>
 
 <template>
   <div class="page">
-    <n-card title="GPU 服务器" style="width: 100%">
+    <n-card :title="t('servers.title')" style="width: 100%">
       <template #header-extra>
         <n-space>
-          <n-button quaternary @click="router.push('/settings')">设置</n-button>
-          <n-button type="primary" @click="openAdd">添加服务器</n-button>
+          <n-button quaternary @click="router.push('/settings')">
+            {{ t("app.menu.settings") }}
+          </n-button>
+          <n-button type="primary" @click="openAdd">{{ t("servers.addServer") }}</n-button>
         </n-space>
       </template>
       <n-data-table :columns="columns" :data="profiles" :bordered="false" />
@@ -217,7 +224,7 @@ onMounted(() => store.loadProfiles());
     <n-modal
       v-model:show="showModal"
       preset="card"
-      :title="editingId ? '编辑服务器' : '添加服务器'"
+      :title="editingId ? t('servers.editServer') : t('servers.addServer')"
       style="width: 520px"
     >
       <n-form
@@ -227,66 +234,66 @@ onMounted(() => store.loadProfiles());
         label-placement="left"
         label-width="90"
       >
-        <n-form-item label="名称" path="name">
-          <n-input v-model:value="form.name" placeholder="如：A100-01" />
+        <n-form-item :label="t('servers.name')" path="name">
+          <n-input v-model:value="form.name" :placeholder="t('servers.namePh')" />
         </n-form-item>
-        <n-form-item label="主机" path="host">
-          <n-input v-model:value="form.host" placeholder="IP 或域名" />
+        <n-form-item :label="t('servers.host')" path="host">
+          <n-input v-model:value="form.host" :placeholder="t('servers.hostPh')" />
         </n-form-item>
-        <n-form-item label="端口" path="port">
+        <n-form-item :label="t('servers.port')" path="port">
           <n-input-number v-model:value="form.port" :min="1" :max="65535" />
         </n-form-item>
-        <n-form-item label="用户" path="user">
+        <n-form-item :label="t('servers.user')" path="user">
           <n-input v-model:value="form.user" />
         </n-form-item>
-        <n-form-item label="认证方式">
+        <n-form-item :label="t('servers.authType')">
           <n-radio-group v-model:value="form.authType">
-            <n-radio-button value="password">密码</n-radio-button>
-            <n-radio-button value="key">密钥</n-radio-button>
+            <n-radio-button value="password">{{ t("servers.authPass") }}</n-radio-button>
+            <n-radio-button value="key">{{ t("servers.authKey") }}</n-radio-button>
           </n-radio-group>
         </n-form-item>
-        <n-form-item v-if="form.authType === 'password'" label="密码" path="password">
+        <n-form-item v-if="form.authType === 'password'" :label="t('servers.authPassword')" path="password">
           <n-input v-model:value="form.password" type="password" show-password-on="click" />
         </n-form-item>
-        <n-form-item v-else label="私钥路径" path="keyPath">
-          <n-input v-model:value="form.keyPath" placeholder="本机私钥文件路径，如 C:\Users\xxx\.ssh\id_ed25519" />
+        <n-form-item v-else :label="t('servers.keyPath')" path="keyPath">
+          <n-input v-model:value="form.keyPath" :placeholder="t('servers.keyPathPh')" />
         </n-form-item>
-        <n-form-item v-if="form.authType === 'key'" label="私钥口令">
-          <n-input v-model:value="form.passphrase" type="password" placeholder="可选" />
+        <n-form-item v-if="form.authType === 'key'" :label="t('servers.keyPassphrase')">
+          <n-input v-model:value="form.passphrase" type="password" :placeholder="t('servers.passPh')" />
         </n-form-item>
-        <n-form-item label="工作目录">
+        <n-form-item :label="t('servers.baseDir')">
           <n-input v-model:value="form.baseDir" placeholder="~/RemoteLLM" />
         </n-form-item>
-        <n-form-item label="高级选项">
+        <n-form-item :label="t('servers.advanced')">
           <n-button size="small" quaternary type="primary" @click="form.advanced = !form.advanced">
-            {{ form.advanced ? "收起 ▲" : "展开 ▼" }}
+            {{ form.advanced ? t("servers.collapse") : t("servers.expand") }}
           </n-button>
         </n-form-item>
         <template v-if="form.advanced">
-          <n-form-item label="模型目录">
+          <n-form-item :label="t('servers.modelsDir')">
             <n-input
               v-model:value="form.modelsDir"
-              placeholder="留空 = 用全局设置 / baseDir/models"
+              :placeholder="t('servers.modelsDirPh')"
             />
           </n-form-item>
-          <n-form-item label="1Cat 仓库">
+          <n-form-item :label="t('servers.onecatRepo')">
             <n-input
               v-model:value="form.onecatRepo"
-              placeholder="留空=默认 https://github.com/chenyb999-zhcn/1Cat-vLLM.git"
+              :placeholder="t('servers.onecatRepoPh')"
             />
           </n-form-item>
-          <n-form-item label="1Cat 镜像">
+          <n-form-item :label="t('servers.onecatImage')">
             <n-input
               v-model:value="form.onecatImage"
-              placeholder="留空=默认 ghcr.io/chenyb999-zhcn/1cat-vllm:1.5"
+              :placeholder="t('servers.onecatImagePh')"
             />
           </n-form-item>
         </template>
       </n-form>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showModal = false">取消</n-button>
-          <n-button type="primary" @click="onSubmit">保存并连接</n-button>
+          <n-button @click="showModal = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" @click="onSubmit">{{ t("servers.saveAndConnect") }}</n-button>
         </n-space>
       </template>
     </n-modal>
