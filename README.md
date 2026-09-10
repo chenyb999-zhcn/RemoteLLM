@@ -9,9 +9,25 @@ A Windows desktop app built with Rust + Tauri v2 that manages LLM inference envi
 ![platform](https://img.shields.io/badge/platform-Windows-blue)
 ![tauri](https://img.shields.io/badge/Tauri-v2-orange)
 
+## Features
+
+- **Server management**: multiple server profiles (password / public-key auth), SSH connect & disconnect, auto-connect to the last server on startup
+- **Dashboard**: environment info cards; real-time GPU utilization / memory / temperature / power curves and GPU process list (pmon); `/metrics` scraping from inference services with line charts (auto-selected key metrics + manual selection, auto-refresh)
+- **Environment check**: 24-item health check with one-click fixes (pip / apt sudo / Docker install & authorization / jump to image pull); 12 CUDA libraries detected via both dpkg and pip (cuBLAS / cuDNN / NCCL / TensorRT-LLM, etc.); sm70 compatibility hints for cards like the V100
+- **GPU management**: per-GPU overview with mini trend charts; GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display
+- **Framework management**:
+  - Docker images: one-click add for the four built-in framework images; "Add Framework Image" supports images from any registry (framework name + image address, validated, pulled automatically and persisted, removable at any time)
+  - Native framework detection: install status and version for vLLM / 1Cat-vLLM / SGLang / llama.cpp, with one-click install / upgrade / uninstall
+  - Instance creation branches by framework: the four built-in frameworks keep the full tabbed parameter settings (hover for CLI flags and official defaults); custom frameworks use a simplified form where the startup command is written by the user
+  - Instance start/stop: native process (nohup + PID) or Docker container (`--gpus all`, model path mounted as-is); live startup command preview
+  - Run logs: loads the last 500 lines initially, automatically loads 500 more when scrolled to the top (viewport-anchored, no jumping); drawer width is 2/3 of the window
+- **Model management**: ModelScope / Hugging Face search with server-side downloads (streaming logs); local model scanning with official `gguf` / `safetensors` header parsing (architecture / parameter count / context size / quantization, split-shard aggregation); persistent metadata cache (instant refresh while the directory fingerprint is unchanged, even across app restarts); model deletion
+- **Settings**: default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; the Docker daemon proxy is configured automatically)
+- **One-click install**: pip / git+cmake / docker pull to install frameworks and toolchains; the 1Cat-vLLM repository URL and image are configurable per server profile
+
 ## Screenshots
 
-> Note: the UI is currently in Chinese. English localization is on the roadmap.
+> Note: the UI is available in Chinese and English — switch in Settings.
 
 ### Dashboard
 
@@ -48,22 +64,6 @@ ModelScope / Hugging Face search with server-side streaming downloads; local mod
 Default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; Docker daemon proxy is configured automatically for image pulls).
 
 <img src="screenshoot/ScreenShot_2026-09-05_174529_929.png" width="840" alt="Settings"/>
-
-## Features
-
-- **Server management**: multiple server profiles (password / public-key auth), SSH connect & disconnect, auto-connect to the last server on startup
-- **Dashboard**: environment info cards; real-time GPU utilization / memory / temperature / power curves and GPU process list (pmon); `/metrics` scraping from inference services with line charts (auto-selected key metrics + manual selection, auto-refresh)
-- **Environment check**: 24-item health check with one-click fixes (pip / apt sudo / Docker install & authorization / jump to image pull); 12 CUDA libraries detected via both dpkg and pip (cuBLAS / cuDNN / NCCL / TensorRT-LLM, etc.); sm70 compatibility hints for cards like the V100
-- **GPU management**: per-GPU overview with mini trend charts; GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display
-- **Framework management**:
-  - Docker images: one-click add for the four built-in framework images; "Add Framework Image" supports images from any registry (framework name + image address, validated, pulled automatically and persisted, removable at any time)
-  - Native framework detection: install status and version for vLLM / 1Cat-vLLM / SGLang / llama.cpp, with one-click install / upgrade / uninstall
-  - Instance creation branches by framework: the four built-in frameworks keep the full tabbed parameter settings (hover for CLI flags and official defaults); custom frameworks use a simplified form where the startup command is written by the user
-  - Instance start/stop: native process (nohup + PID) or Docker container (`--gpus all`, model path mounted as-is); live startup command preview
-  - Run logs: loads the last 500 lines initially, automatically loads 500 more when scrolled to the top (viewport-anchored, no jumping); drawer width is 2/3 of the window
-- **Model management**: ModelScope / Hugging Face search with server-side downloads (streaming logs); local model scanning with official `gguf` / `safetensors` header parsing (architecture / parameter count / context size / quantization, split-shard aggregation); persistent metadata cache (instant refresh while the directory fingerprint is unchanged, even across app restarts); model deletion
-- **Settings**: default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; the Docker daemon proxy is configured automatically)
-- **One-click install**: pip / git+cmake / docker pull to install frameworks and toolchains; the 1Cat-vLLM repository URL and image are configurable per server profile
 
 ## Quick Start
 
