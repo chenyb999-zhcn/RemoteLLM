@@ -76,9 +76,10 @@ Default download source, model directory, HF mirror endpoint + token, polling in
 
 ## Download & Installation
 
-- URL: <https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest>
-- Platform: Windows 10 / 11 x64 (NSIS installer `RemoteLLM_<version>_x64-setup.exe`)
-- Requires the WebView2 Runtime: bundled with Windows 11; the installer bootstraps it on Windows 10 if missing
+- URL: <https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest> (each release ships both packages)
+- Installer: `RemoteLLM_<version>_x64-setup.exe` (NSIS, Windows 10 / 11 x64)
+- Portable: `RemoteLLM_<version>_x64-portable.zip` (extract and run — a single `RemoteLLM.exe`, no installation)
+- Requires the WebView2 Runtime: bundled with Windows 11; the installer bootstraps it on Windows 10 if missing (portable: install the runtime yourself if absent)
 
 ## Remote Directory Layout
 

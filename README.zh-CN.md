@@ -74,9 +74,10 @@ ModelScope / Hugging Face 搜索与服务器端流式下载；本地模型扫描
 
 ## 下载安装
 
-- 下载地址：<https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest>
-- 平台：Windows 10 / 11 x64（NSIS 安装包 `RemoteLLM_<版本>_x64-setup.exe`）
-- 依赖 WebView2 Runtime：Windows 11 自带；Windows 10 缺失时安装器会自动引导安装
+- 下载地址：<https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest>（每次发布同时提供两种包）
+- 安装包：`RemoteLLM_<版本>_x64-setup.exe`（NSIS，Windows 10 / 11 x64）
+- 便携版：`RemoteLLM_<版本>_x64-portable.zip`（解压即用，单文件 `RemoteLLM.exe`，无需安装）
+- 依赖 WebView2 Runtime：Windows 11 自带；Windows 10 缺失时安装器会自动引导安装（便携版需自行确认已安装）
 
 ## 远程目录约定
 
