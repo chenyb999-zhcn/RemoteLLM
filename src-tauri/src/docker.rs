@@ -241,7 +241,8 @@ pub fn build_install_script(mode: SudoMode, password: Option<&str>, deb_mirror: 
         ("systemctl restart docker".to_string(), true),
         ("usermod -aG docker \"$(whoami)\" || true".to_string(), true),
         ("cat > \"$HOME/.rl_nvidia_repo.sh\" <<'RL_EOF'".to_string(), false),
-        ("curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true".to_string(), false),
+        // --batch：无 TTY 的 SSH 会话里 gpg 会尝试开 /dev/tty 而失败（管道断裂，keyring 建不出来）
+        ("curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true".to_string(), false),
         ("curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list || true".to_string(), false),
         ("RL_EOF".to_string(), false),
         ("bash \"$HOME/.rl_nvidia_repo.sh\"".to_string(), true),
@@ -554,6 +555,8 @@ mod tests {
         assert!(s.starts_with("set -e"));
         assert!(s.contains("apt-get install -y docker.io"));
         assert!(s.contains("nvidia-ctk runtime configure --runtime=docker || true"));
+        // 无 TTY 会话必须 --batch（否则 gpg 开 /dev/tty 失败，keyring 建不出来）
+        assert!(s.contains("gpg --batch --yes --dearmor"));
         assert!(s.ends_with("echo DOCKER_INSTALL_DONE"));
         assert!(!s.contains("sudo"));
     }
