@@ -163,8 +163,14 @@ export const useDashboardStore = defineStore("dashboard", {
           if (t0 != null && s0 != null && t1 != null && s1 != null) {
             const dTok = t1 - t0;
             const dSec = s1 - s0;
-            // 计数器回退（服务重启）或窗口内无生成时不产生数据点
-            if (dSec > 1e-9 && dTok >= 0) values[TOKEN_RATE_KEY] = dTok / dSec;
+            if (dTok < 0 || dSec < 0) {
+              // 计数器回退（服务重启）：不产生数据点
+            } else if (dSec > 1e-9) {
+              values[TOKEN_RATE_KEY] = dTok / dSec;
+            } else {
+              // 窗口内无 token 生成：速率记 0，曲线落到 0 轴而不是断线
+              values[TOKEN_RATE_KEY] = 0;
+            }
           }
         }
         this.metricsHistory.push({ ts, values });

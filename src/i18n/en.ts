@@ -387,7 +387,7 @@ export default {
     metricColValue: "Value",
     tokenRateLabel: "Token gen rate (tokens/s)",
     tokenRateHelp:
-      "Δllamacpp:tokens_predicted_total / Δllamacpp:tokens_predicted_seconds_total (delta between two consecutive samples — the real in-window generation speed; no data point when a restart resets the counters)",
+      "Δllamacpp:tokens_predicted_total / Δllamacpp:tokens_predicted_seconds_total (delta between two consecutive samples — the real in-window generation speed; shows 0 when no tokens were generated in the window; no data point when a restart resets the counters)",
   },
   servers: {
     title: "GPU Servers",

@@ -216,9 +216,11 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
     width: 130,
     render: (m) =>
       Number.isFinite(m.value)
-        ? m.value > 100 || m.value < 0.0001
-          ? m.value.toExponential(3)
-          : String(Number(m.value.toFixed(4)))
+        ? m.value === 0
+          ? "0"
+          : m.value > 100 || m.value < 0.0001
+            ? m.value.toExponential(3)
+            : String(Number(m.value.toFixed(4)))
         : String(m.value),
   },
 ]);

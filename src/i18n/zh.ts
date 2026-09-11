@@ -383,7 +383,7 @@ export default {
     metricColValue: "值",
     tokenRateLabel: "Token 生成速率（tokens/s）",
     tokenRateHelp:
-      "Δllamacpp:tokens_predicted_total / Δllamacpp:tokens_predicted_seconds_total（相邻两次采样差值相除，窗口内真实生成速度；服务重启导致计数器回退时不产生数据点）",
+      "Δllamacpp:tokens_predicted_total / Δllamacpp:tokens_predicted_seconds_total（相邻两次采样差值相除，窗口内真实生成速度；窗口内无 token 生成时显示 0，服务重启导致计数器回退时不产生数据点）",
   },
   servers: {
     title: "GPU 服务器",
