@@ -144,7 +144,7 @@ export default {
     saved: "实例已保存",
     stopFailed: "停止失败: {msg}",
     deleteTitle: "删除实例",
-    deleteContent: "确认删除实例「{name}」？（只删除配置，不停止已运行的进程）",
+    deleteContent: "确认删除实例「{name}」？（若实例正在运行，将先停止实例再删除）",
     deleted: "已删除",
     act_install: "安装",
     act_upgrade: "升级",

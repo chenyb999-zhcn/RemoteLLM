@@ -388,6 +388,15 @@ function doDelete(inst: InstanceConfig) {
     positiveText: t("common.delete"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
+      await store.refreshStatus(inst.id);
+      if (store.statuses[inst.id]?.running) {
+        try {
+          await store.stop(inst.id);
+        } catch (e: any) {
+          message.error(t("fw.stopFailed", { msg: e?.message ?? JSON.stringify(e) }));
+          throw e;
+        }
+      }
       await store.remove(inst.id);
       message.success(t("fw.deleted"));
     },

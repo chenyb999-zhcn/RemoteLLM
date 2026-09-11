@@ -48,6 +48,15 @@ export const useInstanceStore = defineStore("instances", {
         this.detecting = false;
       }
     },
+    async refreshStatus(id: string) {
+      const inst = this.instances.find((i) => i.id === id);
+      if (!inst) return;
+      try {
+        this.statuses[id] = await api.instanceStatus(id);
+      } catch {
+        /* 离线实例忽略 */
+      }
+    },
     async refreshStatuses() {
       if (refreshBusy) return;
       refreshBusy = true;

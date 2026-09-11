@@ -146,7 +146,7 @@ export default {
     saved: "Instance saved",
     stopFailed: "Failed to stop: {msg}",
     deleteTitle: "Delete instance",
-    deleteContent: "Delete instance '{name}'? (Only the config is removed; running processes are not stopped)",
+    deleteContent: "Delete instance '{name}'? (If it is running, it will be stopped first before deletion)",
     deleted: "Deleted",
     act_install: "Install",
     act_upgrade: "Upgrade",
