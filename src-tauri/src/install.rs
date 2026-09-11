@@ -37,18 +37,25 @@ fn pip_install(pkg: &str, prefix: &str, idx: &str) -> String {
     )
 }
 
-/// sglang 专用 pip 安装：sglang 依赖 outlines==0.1.11 → outlines_core==0.1.26，
-/// 该版本在清华源只有 sdist（无 cp314 wheel），需源码编译。其 PyO3 0.22.6 最高支持
-/// Python 3.13，在 Python 3.14 上必须设 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 才能
-/// 用稳定 ABI 编译通过；同时确保 cargo 在 PATH（rustup 装在 ~/.cargo/bin，未必在 PATH）。
 /// pip 卸载：只移除指定包本身，不触碰 torch/CUDA 等共享依赖（pip uninstall 默认行为），
 /// 因此不会影响其它引擎。遇 PEP 668 自动重试 --break-system-packages
-fn pip_uninstall(pkg: &str, prefix: &str) -> String {
+/// pip 框架（vLLM/sglang/FastLLM）公共前导：确保 uv 已装（用户态）→ 确保 Python 3.12
+/// 可用 → venv 不存在则创建。幂等可重跑。框架统一装进 {fw_dir}/{venv} 与系统 Python
+/// （可能 3.14，torch 生态不支持）隔离，pip 预编译 wheel 安装、不源码编译。
+fn uv_venv_setup(fw_dir: &str, venv: &str) -> String {
     format!(
-        "{prefix}echo \"[uninstall] 移除 {pkg}（保留 torch 等共享依赖，不影响其它引擎）\"\n\
-         python3 -m pip uninstall -y '{pkg}' 2>&1 \
-           || python3 -m pip uninstall -y '{pkg}' --break-system-packages 2>&1",
-        prefix = prefix
+        "export PATH=\"$HOME/.local/bin:$PATH\"\n\
+         # 统一装进 3.12 venv（系统 python3 可能是 3.14，torch/torch.compile 不支持 3.14，\n\
+         # sglang import 即崩；1Cat 预编译 wheel 仅 cp312），与系统 Python 隔离。\n\
+         # 用 uv 确保 3.12 可用并建 venv（uv 装用户目录，无需 sudo）。\n\
+         if ! command -v uv >/dev/null 2>&1; then\n\
+         echo \"[setup] 安装 uv（用于管理 Python 3.12）...\"\n\
+         curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
+         fi\n\
+         uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
+         if [ ! -x {fw_dir}/{venv}/bin/python ]; then\n\
+         uv venv --python 3.12 {fw_dir}/{venv} 2>&1 || {{ echo \"ERROR: 创建 {venv} venv 失败\"; exit 1; }}\n\
+         fi\n"
     )
 }
 
@@ -101,52 +108,55 @@ pub fn build_install_script(
     Ok(match tool {
         "modelscope" => pip_install("modelscope", &proxy, &idx),
         "huggingface" => pip_install("huggingface_hub[cli]", &proxy, &idx),
-        "vllm" => pip_install("vllm", &proxy, &idx),
-        "sglang" => format!(
-            "{proxy}mkdir -p {fw_dir}\n\
-              export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
-              export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1\n\
-              # sglang 需跑在 Python 3.12（系统 python3 可能是 3.14，torch.compile 不支持 3.14，\n\
-              # sglang import 即崩）。用 uv 确保 3.12 可用并建 venv。\n\
+        "python312" => format!(
+            "{proxy}export PATH=\"$HOME/.local/bin:$PATH\"\n\
+              # 检查并安装 Python 3.12（vLLM/sglang/FastLLM/1Cat venv 的底座）。\n\
+              # uv 装进用户目录（~/.local/share/uv），不碰系统 Python。\n\
               if ! command -v uv >/dev/null 2>&1; then\n\
               echo \"[setup] 安装 uv（用于管理 Python 3.12）...\"\n\
               curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
               fi\n\
               uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
-              if [ ! -x {fw_dir}/sglang-venv/bin/python ]; then\n\
-              uv venv --python 3.12 {fw_dir}/sglang-venv 2>&1 || {{ echo \"ERROR: 创建 sglang venv 失败\"; exit 1; }}\n\
-              fi\n\
+              echo \"[ok] Python 3.12: $(uv python find 3.12 2>/dev/null | head -1)\"\n\
+              echo PY312_DONE",
+        ),
+        "vllm" => format!(
+            "{proxy}mkdir -p {fw_dir}\n\
+              {setup}\
+              {fw_dir}/vllm-venv/bin/python -m pip install -U {idx} 'vllm' 2>&1 \
+              || {fw_dir}/vllm-venv/bin/python -m pip install -U {idx} 'vllm' --break-system-packages 2>&1",
+            setup = uv_venv_setup(&fw_dir, "vllm-venv"),
+        ),
+        "sglang" => format!(
+            "{proxy}mkdir -p {fw_dir}\n\
+              {setup}\
               {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' 2>&1 \
               || {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
+            setup = uv_venv_setup(&fw_dir, "sglang-venv"),
         ),
         "1cat-vllm" => format!(
-            "{proxy}mkdir -p {fw_dir}\ncd {fw_dir}\n\
-              _pyver=$(python3 -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0)\n\
-              if [ \"$_pyver\" != \"312\" ]; then\n\
-              echo \"ERROR: 1Cat-vLLM 仅支持 Python 3.12（预编译 wheel 为 cp312，源码构建的 flash-attn 也拒绝 3.13/3.14）。\"\n\
-              echo \"       当前 Python 版本: $(python3 --version 2>&1)\"\n\
-              echo \"       请先安装 Python 3.12（如 uv python install 3.12 或 deadsnakes PPA），再用 3.12 解释器安装。\"\n\
-              exit 1\n\
+            "{proxy}mkdir -p {fw_dir}\n\
+              export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
+              # 1Cat-vLLM 未发布到 PyPI，只能源码安装；预编译 wheel 仅 cp312、源码 flash-attn\n\
+              # 拒绝 3.13/3.14，统一装进 3.12 venv（启动/检测均回退 1cat-venv）。用 uv 确保 3.12 可用并建 venv。\n\
+              if ! command -v uv >/dev/null 2>&1; then\n\
+              echo \"[setup] 安装 uv（用于管理 Python 3.12）...\"\n\
+              curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
               fi\n\
+              uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
+              if [ ! -x {fw_dir}/1cat-venv/bin/python ]; then\n\
+              uv venv --python 3.12 {fw_dir}/1cat-venv 2>&1 || {{ echo \"ERROR: 创建 1cat venv 失败\"; exit 1; }}\n\
+              fi\n\
+              cd {fw_dir}\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
-               {boot}python3 -m pip install {idx} -e . 2>&1 || python3 -m pip install {idx} -e . --break-system-packages 2>&1",
-            boot = pip_bootstrap()
+              {fw_dir}/1cat-venv/bin/python -m pip install {idx} -e . 2>&1 || {fw_dir}/1cat-venv/bin/python -m pip install {idx} -e . --break-system-packages 2>&1",
         ),
         "fastllm" => format!(
             "{proxy}mkdir -p {fw_dir}\n\
-              export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
-              # FastLLM（pip 包名 ftllm）：与系统 Python（可能 3.14）隔离，\n\
-              # 统一装进 3.12 venv。用 uv 确保 3.12 可用并建 venv。\n\
-              if ! command -v uv >/dev/null 2>&1; then\n\
-              echo \"[setup] 安装 uv（用于管理 Python 3.12）...\"\n\
-              curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
-              fi\n\
-              uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
-              if [ ! -x {fw_dir}/ftllm-venv/bin/python ]; then\n\
-              uv venv --python 3.12 {fw_dir}/ftllm-venv 2>&1 || {{ echo \"ERROR: 创建 ftllm venv 失败\"; exit 1; }}\n\
-              fi\n\
+              {setup}\
               {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' 2>&1 \
               || {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' --break-system-packages 2>&1",
+            setup = uv_venv_setup(&fw_dir, "ftllm-venv"),
         ),
         "llama-cpp" => format!(
             "{proxy}{deb}mkdir -p {fw_dir}\ncd {fw_dir}\n\
@@ -186,11 +196,28 @@ pub fn build_install_script(
         }
         "docker-sglang" => "docker pull 'lmsysorg/sglang:latest-cu129' 2>&1".into(),
         "docker-llama" => "docker pull 'ghcr.io/ggml-org/llama.cpp:server-cuda' 2>&1".into(),
-        // ---------- 卸载：只移除引擎包本身，保留 torch/CUDA 等共享依赖，不影响其它引擎 ----------
-        "uninstall-vllm" => pip_uninstall("vllm", &proxy),
-        "uninstall-sglang" => pip_uninstall("sglang", &proxy),
+        // ---------- 卸载：只移除引擎自身（venv 或 pip 包），保留其它引擎，不影响共享依赖 ----------
+        "uninstall-vllm" => format!(
+            "echo \"[uninstall] 删除 vllm 专用 venv（不影响其它引擎）\"\n\
+              rm -rf {fw_dir}/vllm-venv\n\
+              {proxy}{boot}echo \"[uninstall] 清理系统 python 中的 vllm（兼容旧版安装，不存在时忽略）\"\n\
+              python3 -m pip uninstall -y 'vllm' 2>&1 \
+              || python3 -m pip uninstall -y 'vllm' --break-system-packages 2>&1",
+            boot = pip_bootstrap()
+        ),
+        "uninstall-sglang" => format!(
+            "echo \"[uninstall] 删除 sglang 专用 venv（不影响其它引擎）\"\n\
+              rm -rf {fw_dir}/sglang-venv\n\
+              {proxy}{boot}echo \"[uninstall] 清理系统 python 中的 sglang（兼容旧版安装，不存在时忽略）\"\n\
+              python3 -m pip uninstall -y 'sglang' 2>&1 \
+              || python3 -m pip uninstall -y 'sglang' --break-system-packages 2>&1",
+            boot = pip_bootstrap()
+        ),
         "uninstall-1cat-vllm" => format!(
-            "{proxy}{boot}python3 -m pip uninstall -y '1cat-vllm' 2>&1 \
+            "echo \"[uninstall] 删除 1cat 专用 venv（不影响其它引擎）\"\n\
+              rm -rf {fw_dir}/1cat-venv\n\
+              {proxy}{boot}echo \"[uninstall] 清理系统 python 中的 1cat-vllm（兼容旧版安装，不存在时忽略）\"\n\
+              python3 -m pip uninstall -y '1cat-vllm' 2>&1 \
               || python3 -m pip uninstall -y '1cat-vllm' --break-system-packages 2>&1\n\
               rm -rf {fw_dir}/1Cat-vLLM",
             boot = pip_bootstrap()
@@ -303,10 +330,19 @@ mod tests {
             assert!(!s.contains("uninstall -y 'torch'"), "tool={tool} 误删 torch");
             assert!(!s.contains("uninstall -y 'transformers'"), "tool={tool} 误删 transformers");
         }
-        // 1cat-vllm 额外清理 editable 源码目录
+        // 1cat-vllm 额外清理专用 venv 与 editable 源码目录
         let s1 = build_install_script(&profile(), &d, "uninstall-1cat-vllm", None).unwrap();
         assert!(s1.contains("rm -rf"), "1cat 未清理源码目录");
         assert!(s1.contains("1Cat-vLLM"), "1cat 目录名错误");
+        assert!(s1.contains("1cat-venv"), "1cat 未删专用 venv");
+        // sglang 卸载必须删 venv（旧版只卸系统包会留 venv，卸不干净）
+        let s3 = build_install_script(&profile(), &d, "uninstall-sglang", None).unwrap();
+        assert!(s3.contains("sglang-venv"), "sglang 未删 venv");
+        assert!(s3.contains("rm -rf"), "sglang 卸载未用 rm -rf");
+        // vllm 卸载同样先删 venv，再 best-effort 清旧版系统 pip 包
+        let s0 = build_install_script(&profile(), &d, "uninstall-vllm", None).unwrap();
+        assert!(s0.contains("vllm-venv"), "vllm 未删 venv");
+        assert!(s0.contains("rm -rf"), "vllm 卸载未用 rm -rf");
         // llama-cpp：删整个源码+构建目录
         let s2 = build_install_script(&profile(), &d, "uninstall-llama-cpp", None).unwrap();
         assert!(s2.contains("rm -rf"), "llama 未删目录");
@@ -317,8 +353,8 @@ mod tests {
     #[test]
     fn pip_tools_have_bootstrap() {
         let d = crate::settings::AppSettings::default();
-        // sglang 走 uv venv（自带 pip），不在此列，见 sglang_install_uses_python312_venv
-        for tool in ["vllm", "modelscope", "huggingface", "1cat-vllm", "parser-libs"] {
+        // vllm / sglang / 1cat-vllm / fastllm 走 uv venv（自带 pip），不在此列
+        for tool in ["modelscope", "huggingface", "parser-libs"] {
             let s = build_install_script(&profile(), &d, tool, None).unwrap();
             assert!(s.contains("python3 -m pip --version"), "tool={tool}");
             assert!(s.contains("bootstrap.pypa.io/get-pip.py"), "tool={tool}");
@@ -343,18 +379,19 @@ mod tests {
     }
 
     #[test]
-    fn onecat_install_requires_python_312() {
+    fn onecat_install_uses_python312_venv() {
         // 1Cat-vLLM 预编译 wheel 仅 cp312，源码 flash-attn 也拒绝 3.13/3.14，
-        // 安装前必须预检 Python 版本，非 3.12 直接失败，避免白跑 20 分钟编译
+        // 统一装进 3.12 venv（启动/检测均回退 1cat-venv），不再依赖系统 python3 版本
         let d = crate::settings::AppSettings::default();
         let s = build_install_script(&profile(), &d, "1cat-vllm", None).unwrap();
-        assert!(s.contains("version_info[0]*100+sys.version_info[1]"), "1cat 未探测 Python 版本: {s}");
-        assert!(s.contains("\"312\""), "1cat 未校验 3.12: {s}");
-        assert!(s.contains("仅支持 Python 3.12"), "1cat 缺版本错误提示: {s}");
-        // 预检必须在 git clone 之前（先失败再拉代码）
-        let chk = s.find("version_info").unwrap();
+        assert!(s.contains("uv python install 3.12"), "1cat 未装 Python 3.12: {s}");
+        assert!(s.contains("uv venv --python 3.12"), "1cat 未建 3.12 venv: {s}");
+        assert!(s.contains("1cat-venv/bin/python -m pip install"), "1cat 未装进 venv: {s}");
+        assert!(!s.contains("version_info"), "1cat 不应再探测系统 Python 版本: {s}");
+        // venv 必须在 git clone 之前建好（先备好 3.12 环境再拉代码编译）
+        let venv = s.find("uv venv --python 3.12").unwrap();
         let clone = s.find("git clone").unwrap();
-        assert!(chk < clone, "1cat 版本预检应在 clone 之前");
+        assert!(venv < clone, "1cat venv 应在 clone 之前");
     }
 
     #[test]
@@ -366,11 +403,45 @@ mod tests {
         assert!(s.contains("uv python install 3.12"), "sglang 未装 Python 3.12: {s}");
         assert!(s.contains("uv venv --python 3.12"), "sglang 未建 3.12 venv: {s}");
         assert!(s.contains("sglang-venv/bin/python -m pip install"), "sglang 未装进 venv: {s}");
-        assert!(s.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"), "sglang 未设 ABI3 前向兼容: {s}");
+        // 3.12 venv 走预编译 wheel，不再需要编译回退（PYO3 稳定 ABI / cargo PATH）
+        assert!(!s.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY"), "sglang 不应再有编译回退: {s}");
+        assert!(!s.contains(".cargo/bin"), "sglang 不应再依赖 cargo PATH: {s}");
         // 其它引擎不需要 venv / ABI3
         let v = build_install_script(&profile(), &d, "vllm", None).unwrap();
         assert!(!v.contains("sglang-venv"), "vllm 不应建 sglang venv");
         assert!(!v.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY"), "vllm 不应设 ABI3");
+    }
+
+    #[test]
+    fn vllm_install_uses_python312_venv() {
+        // vLLM 与系统 Python（可能 3.14）隔离，统一装进 3.12 venv（pip 预编译 wheel）
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "vllm", None).unwrap();
+        assert!(s.contains("uv python install 3.12"), "vllm 未装 Python 3.12: {s}");
+        assert!(s.contains("uv venv --python 3.12"), "vllm 未建 3.12 venv: {s}");
+        assert!(s.contains("vllm-venv/bin/python -m pip install"), "vllm 未装进 venv: {s}");
+        assert!(s.contains("'vllm'"), "vllm 包名错误: {s}");
+        // 不再走系统 pip（无 get-pip 引导、无 --break-system-packages 系统回退）
+        assert!(!s.contains("get-pip.py"), "vllm 不应走系统 pip 引导: {s}");
+        assert!(!s.contains("python3 -m pip install"), "vllm 不应装到系统 python: {s}");
+        // 卸载：先删 venv，再 best-effort 清旧版系统包
+        let u = build_install_script(&profile(), &d, "uninstall-vllm", None).unwrap();
+        assert!(u.contains("rm -rf"), "vllm 卸载未删目录");
+        assert!(u.contains("vllm-venv"), "vllm 卸载目录名错误");
+    }
+
+    #[test]
+    fn python312_tool_installs_uv_python() {
+        // 环境检查页「Python 3.12」一键安装：uv 装用户目录 + uv python install 3.12，
+        // 无需 sudo、不碰系统 Python
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "python312", None).unwrap();
+        assert!(s.contains("astral.sh/uv/install.sh"), "python312 未装 uv: {s}");
+        assert!(s.contains("uv python install 3.12"), "python312 未装 3.12: {s}");
+        assert!(s.contains("uv python find 3.12"), "python312 未回显安装结果: {s}");
+        assert!(s.contains("PY312_DONE"), "python312 缺完成标记: {s}");
+        assert!(!s.contains("apt-get"), "python312 不应走 apt: {s}");
+        assert!(!s.contains("sudo"), "python312 不应需要 sudo: {s}");
     }
 
     #[test]

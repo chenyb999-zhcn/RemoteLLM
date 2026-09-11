@@ -272,6 +272,7 @@ export default {
     fixModelscope: "Install modelscope",
     fixHf: "Install hf-cli",
     fixParser: "Install parser libs",
+    fixPython312: "Install Python 3.12",
     fixDockerInstall: "Install Docker",
     fixDockerAuth: "Authorize",
     fixDockerProxy: "Configure daemon proxy",
@@ -444,7 +445,7 @@ export default {
     proxyTitle: "Configure Docker pull proxy",
     authorizeTitle: "Authorize current user for Docker",
     installDesc:
-      "This will install docker.io and nvidia-container-toolkit (GPU runtime) on the server and add the current user to the docker group. The following will run:",
+      "This will install docker.io and nvidia-container-toolkit (GPU runtime) on the server, register the nvidia runtime, and add the current user to the docker group. The script restarts docker (running containers will be interrupted: ones with a restart policy come back automatically, others need to be started again; native nohup instances are unaffected). The following will run:",
     proxyDesc:
       "This will write the proxy configuration into the docker daemon systemd config and restart docker (running containers will be interrupted). The following will run:",
     authorizeDesc:

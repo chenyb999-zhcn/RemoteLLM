@@ -269,6 +269,7 @@ export default {
     fixModelscope: "安装 modelscope",
     fixHf: "安装 hf-cli",
     fixParser: "安装解析库",
+    fixPython312: "安装 Python 3.12",
     fixDockerInstall: "安装 Docker",
     fixDockerAuth: "授权",
     fixDockerProxy: "配置 daemon 代理",
@@ -440,7 +441,7 @@ export default {
     proxyTitle: "配置 Docker 拉取代理",
     authorizeTitle: "授权当前用户使用 Docker",
     installDesc:
-      "将在服务器安装 docker.io 与 nvidia-container-toolkit（GPU 运行时），并把当前用户加入 docker 组。将执行：",
+      "将在服务器安装 docker.io 与 nvidia-container-toolkit（GPU 运行时），注册 nvidia runtime 并把当前用户加入 docker 组。脚本会重启 docker（正在运行的容器会中断：带 restart 策略的自动拉起，未带策略的需重新运行；原生 nohup 实例不受影响）。将执行：",
     proxyDesc:
       "将写入 docker daemon 的 systemd 代理配置并重启 docker（正在运行的容器会中断）。将执行：",
     authorizeDesc: "当前用户没有 Docker 使用权限，将确保 daemon 运行并把用户加入 docker 组：",

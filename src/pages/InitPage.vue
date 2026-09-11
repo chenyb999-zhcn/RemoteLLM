@@ -46,6 +46,7 @@ const FIX_I18N: Record<string, string> = {
   modelscope: "init.fixModelscope",
   huggingface: "init.fixHf",
   "parser-libs": "init.fixParser",
+  python312: "init.fixPython312",
   "docker-install": "init.fixDockerInstall",
   "docker-authorize": "init.fixDockerAuth",
   "docker-proxy": "init.fixDockerProxy",
@@ -250,7 +251,7 @@ function onFix(item: InitItem) {
   if (!fix) return;
   if (fix === "apt") {
     void askApt(item.fixPkgs ?? []);
-  } else if (fix === "modelscope" || fix === "huggingface" || fix === "parser-libs") {
+  } else if (fix === "modelscope" || fix === "huggingface" || fix === "parser-libs" || fix === "python312") {
     void askInstall(fix);
   } else if (fix === "docker-install") {
     void askDocker("install");

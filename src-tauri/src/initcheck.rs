@@ -70,7 +70,7 @@ uname -sr
 echo "==GPU=="
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo GPU_NONE
 command -v nvcc >/dev/null 2>&1 && nvcc --version 2>/dev/null | grep -o 'release [0-9.]*' | head -1 || true
-# Rust 工具链（sglang 的 outlines_core 等 Rust 扩展编译需要；rustup 装在 ~/.cargo/bin，未必在 PATH）
+# Rust 工具链（预编译 wheel 缺失时 Rust 扩展编译兜底；rustup 装在 ~/.cargo/bin，未必在 PATH）
 {{ command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]; }} && {{ cargo --version 2>/dev/null || "$HOME/.cargo/bin/cargo" --version 2>/dev/null; }} | grep -oE 'cargo [0-9.]+' | head -1 || true
 echo "==DOCKER=="
 docker --version 2>/dev/null | head -1
@@ -83,13 +83,23 @@ docker info --format '{{{{.HTTPProxy}}}}' 2>/dev/null
 echo "==PY=="
 python3 --version 2>/dev/null
 python3 -m pip --version 2>/dev/null | head -1
+# Python 3.12（vLLM/sglang/FastLLM/1Cat venv 底座）：先 uv python find（覆盖 uv 管理+系统），
+# 再回退系统 python3.12
+export PATH="$HOME/.local/bin:$PATH"
+_p312=$(uv python find 3.12 2>/dev/null | head -1)
+[ -z "$_p312" ] && _p312=$(command -v python3.12 >/dev/null 2>&1 && python3.12 --version 2>/dev/null)
+[ -n "$_p312" ] && echo "PY312 $_p312" || echo "PY312 NONE"
 {{ command -v modelscope >/dev/null 2>&1 || [ -x "$HOME/.local/bin/modelscope" ]; }} && echo MS_OK || echo MS_NONE
 {{ command -v huggingface-cli >/dev/null 2>&1 || [ -x "$HOME/.local/bin/huggingface-cli" ]; }} && echo HF_OK || echo HF_NONE
 echo "==PYLIBS=="
 python3 -c "import importlib.util as u; print('GGUF_OK' if u.find_spec('gguf') else 'GGUF_NO'); print('ST_OK' if u.find_spec('safetensors') else 'ST_NO')" 2>/dev/null
 echo "==VLLM=="
+# vLLM 装在 3.12 venv 里（一键安装）；先查 PATH 上的 vllm，再回退到 venv 的 vllm 二进制
 _v=""
 command -v vllm >/dev/null 2>&1 && _v=$(vllm --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm" ]; then
+  _v=$("$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm" --version 2>/dev/null | head -1)
+fi
 _p=$(python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/null)
 [ -n "$_v" ] && echo "$_v"
 [ -n "$_p" ] && echo "$_p"
@@ -122,7 +132,7 @@ echo "==CUDALIBS=="
 # （nvidia-*-cu12 系列 / tensorrt-llm，系统 python3 + 引擎 venv）
 _dpkg=$(dpkg -l 2>/dev/null | awk '/^ii/ {{print $2" "$3}}')
 _pips=""
-for P in python3 "$HOME/RemoteLLM/frameworks/1cat-venv/bin/python" "$HOME/RemoteLLM/frameworks/sglang-venv/bin/python"; do
+for P in python3 "$HOME/RemoteLLM/frameworks/vllm-venv/bin/python" "$HOME/RemoteLLM/frameworks/1cat-venv/bin/python" "$HOME/RemoteLLM/frameworks/sglang-venv/bin/python" "$HOME/RemoteLLM/frameworks/ftllm-venv/bin/python"; do
   if [ "$P" = "python3" ]; then command -v python3 >/dev/null 2>&1 || continue; else [ -x "$P" ] || continue; fi
   _pips="$_pips
 $("$P" -m pip list --format=freeze 2>/dev/null)"
@@ -165,7 +175,7 @@ pub struct InitSignals {
     /// (GPU 型号, 驱动版本)
     pub gpus: Vec<(String, String)>,
     pub nvcc: Option<String>,
-    /// Rust 工具链版本（cargo），sglang 等含 Rust 扩展的引擎编译需要
+    /// Rust 工具链版本（cargo），预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发），1Cat 源码安装可能需要
     pub rust: Option<String>,
     pub docker_version: Option<String>,
     pub daemon_active: bool,
@@ -176,6 +186,8 @@ pub struct InitSignals {
     pub daemon_proxy: Option<String>,
     pub python: Option<String>,
     pub pip: Option<String>,
+    /// Python 3.12 可用路径（uv 管理的解释器或系统 python3.12），框架 venv 的底座
+    pub python312: Option<String>,
     pub modelscope: bool,
     pub hf_cli: bool,
     pub gguf: bool,
@@ -254,6 +266,12 @@ pub fn parse_signals(raw: &str) -> InitSignals {
     let mut py_lines = py.lines().map(str::trim).filter(|l| !l.is_empty());
     s.python = py_lines.next().map(|l| l.to_string());
     s.pip = py_lines.next().filter(|l| l.starts_with("pip")).map(|l| l.to_string());
+    s.python312 = py
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("PY312 "))
+        .map(|l| l["PY312 ".len()..].trim().to_string())
+        .filter(|l| !l.is_empty() && *l != "NONE");
     s.modelscope = py.lines().any(|l| l.trim() == "MS_OK");
     s.hf_cli = py.lines().any(|l| l.trim() == "HF_OK");
 
@@ -474,14 +492,14 @@ pub fn build_items(
             Some("未安装；仅原生模式需要（vLLM/sglang pip 安装、llama.cpp 编译），docker 模式不需要".into()),
         )),
     }
-    // Rust 工具链：sglang 的 outlines_core 等 Rust 扩展需编译（无预编译 wheel 时）
+    // Rust 工具链：预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发）
     match &s.rust {
         Some(ver) => v.push(item(
             "gpu.rust",
             "gpu",
             "Rust 工具链",
             "ok",
-            Some(format!("cargo {ver}（sglang 等含 Rust 扩展的引擎编译需要）")),
+            Some(format!("cargo {ver}（预编译 wheel 缺失时 Rust 扩展编译兜底）")),
         )),
         None => v.push(InitItem {
             manual: Some(
@@ -493,7 +511,7 @@ pub fn build_items(
                 "gpu",
                 "Rust 工具链",
                 "warn",
-                Some("未安装；sglang 的 outlines_core 等 Rust 扩展需编译（无预编译 wheel 时），vLLM/llama.cpp 不需要".into()),
+                Some("未安装；预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发），1Cat 源码安装可能需要".into()),
             )
         }),
     }
@@ -572,7 +590,7 @@ pub fn build_items(
         ));
     } else {
         let detail = if s.nvidia_ctk {
-            "nvidia-container-toolkit 已装，但 docker 未注册 runtime（需 nvidia-ctk runtime configure + 重启）"
+            "nvidia-container-toolkit 已装，但 docker 未注册 runtime（一键修复将自动执行 nvidia-ctk runtime configure 并重启 docker，运行中的容器会中断）"
         } else if s.nvidia_bin {
             "运行时二进制存在，未注册 docker runtime"
         } else {
@@ -652,6 +670,26 @@ pub fn build_items(
                 "Python3 + pip",
                 "missing",
                 Some("python3 不可用".into()),
+            )
+        }),
+    }
+    // Python 3.12：vLLM/sglang/FastLLM/1Cat 原生 venv 的底座（uv 装用户目录，一键安装无需 sudo）
+    match &s.python312 {
+        Some(ver) => v.push(item(
+            "tools.python312",
+            "tools",
+            "Python 3.12（框架 venv）",
+            "ok",
+            Some(format!("{ver}（vLLM/sglang/FastLLM/1Cat 原生 venv 底座）")),
+        )),
+        None => v.push(InitItem {
+            fix: Some("python312".into()),
+            ..item(
+                "tools.python312",
+                "tools",
+                "Python 3.12（框架 venv）",
+                "missing",
+                Some("未安装；vLLM/sglang/FastLLM/1Cat 原生框架一键安装必需（uv 装用户目录，无需 sudo）".into())
             )
         }),
     }
@@ -920,6 +958,7 @@ http://192.168.31.150:10810/
 ==PY==
 Python 3.14.4
 pip 25.0 from /usr/lib (python 3.14)
+PY312 /home/u/.local/share/uv/python/cpython-3.12.11-linux-x86_64/bin/python3.12
 MS_OK
 HF_NONE
 ==PYLIBS==
@@ -958,6 +997,10 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
         assert_eq!(s.images.len(), 2);
         assert!(s.fw.iter().all(|(_, ok, _)| !ok));
         assert_eq!(s.rust.as_deref(), Some("1.88.0"));
+        assert_eq!(
+            s.python312.as_deref(),
+            Some("/home/u/.local/share/uv/python/cpython-3.12.11-linux-x86_64/bin/python3.12")
+        );
         // CUDA 库：dpkg 命中 / pip 命中；未出现者为缺失
         assert_eq!(
             s.cuda_libs.get("cublas").map(String::as_str),
@@ -1021,6 +1064,29 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
         let r2 = items2.iter().find(|i| i.id == "gpu.rust").unwrap();
         assert_eq!(r2.state, "warn");
         assert!(r2.manual.as_deref().unwrap().contains("rustup.rs"));
+    }
+
+    #[test]
+    fn build_items_python312() {
+        let s = parse_signals(RAW_Z420);
+        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let p = items.iter().find(|i| i.id == "tools.python312").unwrap();
+        // 有 3.12（uv 管理）→ ok，无修复按钮
+        assert_eq!(p.state, "ok");
+        assert!(p.detail.as_deref().unwrap().contains("cpython-3.12.11"));
+        assert!(p.fix.is_none());
+
+        // 无 3.12 → missing + python312 一键安装（uv，无需 sudo）
+        let raw_nop312 = RAW_Z420.replace(
+            "PY312 /home/u/.local/share/uv/python/cpython-3.12.11-linux-x86_64/bin/python3.12\n",
+            "PY312 NONE\n",
+        );
+        let s2 = parse_signals(&raw_nop312);
+        assert_eq!(s2.python312, None);
+        let items2 = build_items(&s2, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let p2 = items2.iter().find(|i| i.id == "tools.python312").unwrap();
+        assert_eq!(p2.state, "missing");
+        assert_eq!(p2.fix.as_deref(), Some("python312"));
     }
 
     #[test]

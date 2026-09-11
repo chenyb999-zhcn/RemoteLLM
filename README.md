@@ -13,17 +13,17 @@ A Windows desktop app built with Rust + Tauri v2 that manages LLM inference envi
 
 - **Server management**: multiple server profiles (password / public-key auth), SSH connect & disconnect, auto-connect to the last server on startup
 - **Dashboard**: environment info cards; real-time GPU utilization / memory / temperature / power curves and GPU process list (pmon); `/metrics` scraping from inference services with line charts (auto-selected key metrics + manual selection, auto-refresh; derived Token gen rate (tokens/s) metric from consecutive counter deltas)
-- **Environment check**: 24-item health check with one-click fixes (pip / apt sudo / Docker install & authorization / jump to image pull); 12 CUDA libraries detected via both dpkg and pip (cuBLAS / cuDNN / NCCL / TensorRT-LLM, etc.); sm70 compatibility hints for cards like the V100
+- **Environment check**: 25-item health check with one-click fixes (pip / apt sudo / Docker install & authorization / jump to image pull); includes a Python 3.12 check with one-click uv install (venv base for the native frameworks); 12 CUDA libraries detected via both dpkg and pip (cuBLAS / cuDNN / NCCL / TensorRT-LLM, etc.); sm70 compatibility hints for cards like the V100
 - **GPU management**: per-GPU overview with mini trend charts; GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display
 - **Framework management**:
   - Docker images: one-click add for the four built-in framework images; "Add Framework Image" supports images from any registry (framework name + image address, validated, pulled automatically and persisted, removable at any time)
-  - Native framework detection: install status and version for vLLM / 1Cat-vLLM / SGLang / llama.cpp, with one-click install / upgrade / uninstall
-  - Instance creation branches by framework: the four built-in frameworks keep the full tabbed parameter settings (hover for CLI flags and official defaults); custom frameworks use a simplified form where the startup command is written by the user
+   - Native framework detection: install status and version for vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM, with one-click install / upgrade / uninstall (FastLLM is a C++ implementation without a PyTorch dependency, native mode only)
+   - Instance creation branches by framework: the five built-in frameworks keep the full tabbed parameter settings (hover for CLI flags and official defaults); custom frameworks use a simplified form where the startup command is written by the user
   - Instance start/stop: native process (nohup + PID) or Docker container (`--gpus all`, model path mounted as-is); live startup command preview
   - Run logs: loads the last 500 lines initially, automatically loads 500 more when scrolled to the top (viewport-anchored, no jumping); drawer width is 2/3 of the window
 - **Model management**: ModelScope / Hugging Face search with server-side downloads (streaming logs); local model scanning with official `gguf` / `safetensors` header parsing (architecture / parameter count / context size / quantization, split-shard aggregation); persistent metadata cache (instant refresh while the directory fingerprint is unchanged, even across app restarts); model deletion
 - **Settings**: default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; the Docker daemon proxy is configured automatically)
-- **One-click install**: pip / git+cmake / docker pull to install frameworks and toolchains; the 1Cat-vLLM repository URL and image are configurable per server profile
+- **One-click install**: pip (Python frameworks install into an isolated Python 3.12 venv) / git+cmake / docker pull to install frameworks and toolchains; the 1Cat-vLLM repository URL and image are configurable per server profile
 
 ## Screenshots
 
@@ -32,9 +32,9 @@ A Windows desktop app built with Rust + Tauri v2 that manages LLM inference envi
 <img src="screenshoot/ui-tour.gif" width="840" alt="UI tour (Dashboard → Environment Check → GPU Management → Framework Management → Model Management → Settings)"/>
 
 - **Dashboard**: environment info cards (OS / CPU / multi-partition disks / Python / CUDA / driver / Docker); real-time curves for GPU utilization, memory, temperature and power, plus a GPU process list; `/metrics` scraping from inference services with line charts (key metrics auto-selected, manual selection and auto-refresh supported; includes a derived Token gen rate (tokens/s) metric — delta of the `llamacpp:tokens_predicted_total` and `llamacpp:tokens_predicted_seconds_total` counters between consecutive samples).
-- **Environment check**: a 24-item health check (essential tools / GPU driver / Docker & GPU runtime / model tooling / inference engines / CUDA libraries) with one-click fixes (pip / apt / Docker install & authorization / jump to image pull); sm70 compatibility hints for cards like the V100; copyable commands for manual items such as driver installation.
+- **Environment check**: a 25-item health check (essential tools / GPU driver / Docker & GPU runtime / model tooling / inference engines / CUDA libraries) with one-click fixes (pip / apt / Docker install & authorization / Python 3.12 via uv / jump to image pull); sm70 compatibility hints for cards like the V100; copyable commands for manual items such as driver installation.
 - **GPU management**: per-GPU overview (model / serial / VBIOS / PCIe / ECC / throttle reasons, compatible with both legacy and modern driver bitmask formats); GPU process management (shows owner, only your own processes can be killed); Persistence Mode toggle and power limit adjustment (sudo password flow); GPU topology display.
-- **Framework management**: one-click add / pull of Docker images; "Add Framework Image" supports images from any registry (framework name + image address, validated before automatic pull and persisted); native framework detection for vLLM / 1Cat-vLLM / SGLang / llama.cpp; dynamic instance parameter forms with live command preview; run-log drawer (last 500 lines initially, older lines load on scroll-to-top).
+- **Framework management**: one-click add / pull of Docker images; "Add Framework Image" supports images from any registry (framework name + image address, validated before automatic pull and persisted); native framework detection for vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM; dynamic instance parameter forms with live command preview; run-log drawer (last 500 lines initially, older lines load on scroll-to-top).
 - **Model management**: ModelScope / Hugging Face search with server-side streaming downloads; local model scanning parses headers with the official `gguf` / `safetensors` packages (architecture / parameter count / context size / quantization, split-shard aggregation) and a persistent metadata cache — refreshing an unchanged directory returns in seconds.
 - **Settings**: default download source, model directory, HF mirror endpoint + token, polling interval, dark theme; download proxy (when enabled, model downloads / pip / git clone go through the proxy; Docker daemon proxy is configured automatically for image pulls).
 
@@ -42,7 +42,7 @@ A Windows desktop app built with Rust + Tauri v2 that manages LLM inference envi
 
 1. **Install**: download `RemoteLLM_*_x64-setup.exe` from [Releases](https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest)
 2. **Add a server**: enter host, account and authentication (password or private key), then connect
-3. **Health check**: review the 24 items on the Environment Check page and fix missing ones with one click
+3. **Health check**: review the 25 items on the Environment Check page and fix missing ones with one click
 4. **Prepare a framework**: add / pull images on the Docker images card (custom framework images supported), or one-click install a native framework
 5. **Create an instance**: pick a framework, model path and parameters (for custom frameworks, write the startup command directly) → start
 6. **Monitor**: watch GPU curves and `/metrics` on the dashboard; view instance output in the log drawer
