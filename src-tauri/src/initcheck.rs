@@ -76,7 +76,8 @@ echo "==DOCKER=="
 docker --version 2>/dev/null | head -1
 systemctl is-active docker 2>/dev/null
 (docker info >/dev/null 2>&1 && echo OK) || echo FAIL
-docker info --format '{{{{.Runtimes}}}}' 2>/dev/null | grep -q '"nvidia"' && echo RT_OK || true
+# json 函数强制 JSON 输出（裸模板输出 Go map 格式 map[nvidia:...]，无引号，grep 不到 "nvidia"）
+docker info --format '{{{{json .Runtimes}}}}' 2>/dev/null | grep -q '"nvidia"' && echo RT_OK || true
 command -v nvidia-ctk >/dev/null 2>&1 && echo CTK_OK || true
 [ -x /usr/bin/nvidia-container-runtime ] && echo BIN_OK || true
 docker info --format '{{{{.HTTPProxy}}}}' 2>/dev/null
@@ -934,6 +935,16 @@ mod tests {
         s.proxy_enabled = enabled;
         s.proxy_url = url.into();
         s
+    }
+
+    #[test]
+    fn init_script_renders_json_runtimes() {
+        // 脚本经 format! 渲染（{{{{ }}}），任何单花括号会在此 panic；
+        // 同时锁定 json 模板（裸 {{.Runtimes}} 输出 Go map 无引号，grep '"nvidia"' 永远不中）
+        let s = init_script("~/RemoteLLM");
+        assert!(s.contains(
+            r#"docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"' && echo RT_OK || true"#
+        ));
     }
 
     const RAW_Z420: &str = "\

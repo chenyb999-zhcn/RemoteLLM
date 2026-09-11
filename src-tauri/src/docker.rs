@@ -41,7 +41,8 @@ echo "==ROOT=="
 echo "==SUDO=="
 sudo -n true 2>/dev/null && echo OK || echo FAIL
 echo "==GPU=="
-docker info --format '{{.Runtimes}}' 2>/dev/null | grep -q '"nvidia"' && echo RT_OK || true
+# json 函数强制 JSON 输出（裸 {{.Runtimes}} 是 Go map 格式 map[nvidia:{...}]，无引号，grep 不到）
+docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"' && echo RT_OK || true
 command -v nvidia-ctk >/dev/null 2>&1 && echo CTK_OK || true
 [ -x /usr/bin/nvidia-container-runtime ] && echo BIN_OK || true
 echo "==DPROXY=="
