@@ -13,6 +13,21 @@ export function metricKey(m: MetricSample): string {
   return labels ? `${m.name}{${labels}}` : m.name;
 }
 
+/**
+ * 派生指标：Token 生成速率（tokens/s）
+ * = Δ(llamacpp:tokens_predicted_total) / Δ(llamacpp:tokens_predicted_seconds_total)
+ * 两个都是累计计数器，必须取相邻两次采样的差值相除（窗口内真实生成速度），
+ * 直接用当前值相除得到的是"自服务启动以来的平均速度"。
+ */
+export const TOKEN_RATE_KEY = "__derived__token_rate";
+const TOKENS_TOTAL_METRIC = "llamacpp:tokens_predicted_total";
+const PREDICT_SECONDS_METRIC = "llamacpp:tokens_predicted_seconds_total";
+
+function keyByName(samples: MetricSample[], name: string): string | null {
+  const hit = samples.find((s) => s.name === name);
+  return hit ? metricKey(hit) : null;
+}
+
 /** 自动勾选白名单（命中指标名即选，上限内取前几个） */
 const AUTO_SELECT_RE =
   /tokens_seconds|active_requests|kv_cache|gpu_cache_usage|num_requests|requests_running|requests_waiting|cache_config|prompt_tokens_seconds|time_per_output_token|e2e_request_latency/;
@@ -131,23 +146,48 @@ export const useDashboardStore = defineStore("dashboard", {
       this.metricsErr = null;
       try {
         const samples = await api.metricsPoll(id, this.metricsPort);
-        this.metrics = samples;
         const ts = Date.now();
         const values: Record<string, number> = {};
         for (const s of samples) {
           if (Number.isFinite(s.value)) values[metricKey(s)] = s.value;
         }
+        // 派生指标：token 生成速率（相邻两次采样，累计计数器差值相除）
+        const tokKey = keyByName(samples, TOKENS_TOTAL_METRIC);
+        const secKey = keyByName(samples, PREDICT_SECONDS_METRIC);
+        if (tokKey && secKey) {
+          const prev = this.metricsHistory[this.metricsHistory.length - 1];
+          const t0 = prev?.values[tokKey];
+          const s0 = prev?.values[secKey];
+          const t1 = values[tokKey];
+          const s1 = values[secKey];
+          if (t0 != null && s0 != null && t1 != null && s1 != null) {
+            const dTok = t1 - t0;
+            const dSec = s1 - s0;
+            // 计数器回退（服务重启）或窗口内无生成时不产生数据点
+            if (dSec > 1e-9 && dTok >= 0) values[TOKEN_RATE_KEY] = dTok / dSec;
+          }
+        }
         this.metricsHistory.push({ ts, values });
         if (this.metricsHistory.length > MAX_POINTS) this.metricsHistory.shift();
-        // 首次抓取且无历史勾选：按白名单自动勾选
+        // 表格中追加派生指标伪行（可勾选上图）；名称列在页面里做友好显示
+        if (values[TOKEN_RATE_KEY] != null) {
+          this.metrics = [
+            ...samples,
+            { name: TOKEN_RATE_KEY, help: null, labels: [], value: values[TOKEN_RATE_KEY] },
+          ];
+        } else {
+          this.metrics = samples;
+        }
+        // 首次抓取且无历史勾选：按白名单自动勾选（派生指标优先）
         if (!this.metricsSelected.length && samples.length) {
           const auto = samples
             .filter((s) => AUTO_SELECT_RE.test(s.name) && Number.isFinite(s.value))
             .map(metricKey)
-            .filter((k, i, arr) => arr.indexOf(k) === i)
-            .slice(0, MAX_SELECTED);
-          for (const k of auto) this.metricsSelected.push(k);
-          if (auto.length) localStorage.setItem(SEL_KEY, JSON.stringify(this.metricsSelected));
+            .filter((k, i, arr) => arr.indexOf(k) === i);
+          if (tokKey && secKey) auto.unshift(TOKEN_RATE_KEY);
+          for (const k of auto.slice(0, MAX_SELECTED)) this.metricsSelected.push(k);
+          if (this.metricsSelected.length)
+            localStorage.setItem(SEL_KEY, JSON.stringify(this.metricsSelected));
         }
       } catch (e: any) {
         this.metricsErr = e?.message ?? JSON.stringify(e);

@@ -46,7 +46,7 @@ import { api, onTaskStream } from "../lib/api";
 import { i18n } from "../i18n";
 import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
-import type { DockerStatus, InstanceConfig, LocalImage } from "../lib/types";
+import type { DockerStatus, InstanceConfig, LocalImage, LocalModel } from "../lib/types";
 
 import { FW_META, type ParamDef, type FwTab } from "../lib/fwParams";
 
@@ -207,21 +207,31 @@ function onFrameworkChange() {
   }
 }
 
-// ---------- 本地 GGUF 模型列表（投机解码 draft 模型下拉，懒加载） ----------
-const localGgufs = ref<{ label: string; value: string }[]>([]);
-let ggufLoadedFor: string | null = null;
+// ---------- 本地模型列表（实例表单模型下拉 / 投机解码 draft 模型下拉，懒加载） ----------
+const localModelsRaw = ref<LocalModel[]>([]);
+const modelsLoading = ref(false);
+let modelsLoadedFor: string | null = null;
 
-async function ensureLocalGgufs() {
+const localModels = computed(() =>
+  localModelsRaw.value.map((m) => ({ label: m.name, value: m.path })),
+);
+const localGgufs = computed(() =>
+  localModelsRaw.value
+    .filter((m) => m.kind === "gguf" || m.kind === "gguf-split")
+    .map((m) => ({ label: m.name, value: m.path })),
+);
+
+async function ensureLocalModels() {
   const pid = current.value?.id;
-  if (!pid || ggufLoadedFor === pid) return;
+  if (!pid || modelsLoadedFor === pid) return;
+  modelsLoading.value = true;
   try {
-    const models = await api.listLocalModels(pid);
-    localGgufs.value = models
-      .filter((m) => m.kind === "gguf" || m.kind === "gguf-split")
-      .map((m) => ({ label: m.name, value: m.path }));
-    ggufLoadedFor = pid;
+    localModelsRaw.value = await api.listLocalModels(pid);
+    modelsLoadedFor = pid;
   } catch {
-    // 列表加载失败不阻塞表单，draft 模型下拉留空
+    // 列表加载失败不阻塞表单，模型下拉留空（可手输路径）
+  } finally {
+    modelsLoading.value = false;
   }
 }
 
@@ -230,10 +240,10 @@ function openAdd() {
   form.name = "";
   form.framework = "vllm";
   form.mode = "native";
-  form.modelPath = current.value ? `${current.value.baseDir}/models/` : "";
+  form.modelPath = "";
   onFrameworkChange();
   showModal.value = true;
-  ensureLocalGgufs();
+  ensureLocalModels();
 }
 
 function openEdit(inst: InstanceConfig) {
@@ -252,7 +262,7 @@ function openEdit(inst: InstanceConfig) {
     form.params.specType = "draft-mtp";
   }
   showModal.value = true;
-  ensureLocalGgufs();
+  ensureLocalModels();
 }
 
 function isCustomFwFor(fw: string): boolean {
@@ -423,7 +433,7 @@ const columns = computed<DataTableColumns<InstanceConfig>>(() => [
   {
     title: t("common.actions"),
     key: "actions",
-    width: 260,
+    width: 360,
     render: (i) => {
       const s = statuses.value[i.id];
       return h(NSpace, { size: 6 }, {
@@ -1077,10 +1087,14 @@ function paramTooltip(p: ParamDef): string {
 
         <!-- 自定义框架：简化表单（无参数选项），启动命令由用户填写 -->
         <template v-if="isCustomFw">
-          <n-form-item :label="t('fw.modelPath')">
-            <n-input
+          <n-form-item :label="t('fw.modelDir')">
+            <n-select
               v-model:value="form.modelPath"
-              :placeholder="current ? `${current.baseDir}/models/...` : ''"
+              :options="localModels"
+              :loading="modelsLoading"
+              filterable
+              tag
+              :placeholder="t('fw.modelPh')"
             />
           </n-form-item>
           <n-form-item :label="t('fw.port')">
@@ -1111,10 +1125,14 @@ function paramTooltip(p: ParamDef): string {
               <n-radio-button value="docker">{{ t("fw.modeDocker") }}</n-radio-button>
             </n-radio-group>
           </n-form-item>
-          <n-form-item :label="form.framework === 'llama-cpp' ? t('fw.modelFile') : t('fw.modelDir')">
-            <n-input
+          <n-form-item :label="t('fw.modelDir')">
+            <n-select
               v-model:value="form.modelPath"
-              :placeholder="current ? `${current.baseDir}/models/...` : ''"
+              :options="localModels"
+              :loading="modelsLoading"
+              filterable
+              tag
+              :placeholder="t('fw.modelPh')"
             />
           </n-form-item>
           <n-form-item :label="t('fw.port')">

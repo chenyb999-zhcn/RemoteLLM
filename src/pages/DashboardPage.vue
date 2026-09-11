@@ -19,7 +19,7 @@ import {
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useServerStore } from "../stores/server";
-import { useDashboardStore, metricKey } from "../stores/dashboard";
+import { useDashboardStore, metricKey, TOKEN_RATE_KEY } from "../stores/dashboard";
 import { fmtBytes } from "../lib/api";
 import type { GpuPoll, MetricSample, ProcRow } from "../lib/types";
 import LineChart from "../components/LineChart.vue";
@@ -104,6 +104,7 @@ const sysMemSeries = computed((): Series[] => [
 
 // ---------- 推理指标折线 ----------
 function shortLabel(key: string): string {
+  if (key === TOKEN_RATE_KEY) return t("dashboard.tokenRateLabel");
   const i = key.indexOf("{");
   const name = i > 0 ? key.slice(0, i) : key;
   const labels = i > 0 ? key.slice(i + 1, key.length - 1) : "";
@@ -195,7 +196,10 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
     title: t("dashboard.metricColName"),
     key: "name",
     ellipsis: { tooltip: true },
-    render: (m) => h("span", { title: m.help ?? "" }, m.name),
+    render: (m) =>
+      m.name === TOKEN_RATE_KEY
+        ? h("span", { title: t("dashboard.tokenRateHelp") }, t("dashboard.tokenRateLabel"))
+        : h("span", { title: m.help ?? "" }, m.name),
   },
   {
     title: t("dashboard.metricColLabels"),
