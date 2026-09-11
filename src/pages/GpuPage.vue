@@ -23,6 +23,7 @@ import { useServerStore } from "../stores/server";
 import { useSettingsStore } from "../stores/settings";
 import { api, fmtBytes, onTaskStream } from "../lib/api";
 import type { GpuProcRow, GpuQueryResult } from "../lib/types";
+import SpinButton from "../components/SpinButton.vue";
 
 const store = useServerStore();
 const { current } = storeToRefs(store);
@@ -293,10 +294,9 @@ onBeforeUnmount(() => {
         <n-tag v-if="mergedCards.length" size="small">
           {{ t("gpu.driverTag", { v: mergedCards[0].driver || "-" }) }}
         </n-tag>
-        <n-button size="small" :loading="loading" @click="refresh">
-          <template #icon><span /></template>
+        <spin-button size="small" :loading="loading" @click="refresh">
           {{ t("gpu.redetect") }}
-        </n-button>
+        </spin-button>
       </n-space>
     </n-space>
 

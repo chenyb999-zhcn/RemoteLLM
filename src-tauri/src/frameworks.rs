@@ -315,6 +315,56 @@ fn push_1cat_extra(p: &serde_json::Value, c: &mut Vec<String>) {
     pflag_s(p, c, "performanceMode", "--performance-mode");
 }
 
+/// FastLLM 全部可选参数（仅原生模式），对照 https://github.com/ztxz16/fastllm README「常用参数」
+/// 服务入口 ftllm server <model>（OpenAI 兼容 API）。注意 --startup-progress 是连字符，
+/// 其余长参数为下划线形式（README 列出的别名如 --max-context-length 未采用）。
+fn push_fastllm_common(p: &serde_json::Value, c: &mut Vec<String>) {
+    // 基本
+    pflag_s(p, c, "device", "--device");
+    pflag_s(p, c, "tp", "--tp");
+    pflag_n(p, c, "threads", "-t");
+    pflag_n(p, c, "gpuMemRatio", "--gpu_mem_ratio");
+    // MoE 混合
+    // moe_device 可为设备名或比例组合（含 { } ' : 等字符），加引号
+    pflag_sq(p, c, "moeDevice", "--moe_device");
+    pflag_n(p, c, "moeDeviceLayers", "--moe_device_layers");
+    pflag_s(p, c, "moeDtype", "--moe_dtype");
+    pflag_s(p, c, "atype", "--atype");
+    pflag_s(p, c, "moeAtype", "--moe_atype");
+    pflag_sq(p, c, "moeCudaCache", "--moe_cuda_cache");
+    pflag_s(p, c, "ngramDevice", "--ngram_device");
+    // 显存与上下文
+    pflag_s(p, c, "dtype", "--dtype");
+    pflag_s(p, c, "kvCacheDtype", "--kv_cache_dtype");
+    pflag_n(p, c, "tokens", "--tokens");
+    pflag_n(p, c, "pageSize", "--page_size");
+    pflag_n(p, c, "maxBatch", "--max_batch");
+    pflag_n(p, c, "maxContextLength", "--max_context_length");
+    // rope_scaling 接受 yarn 或 JSON，加引号
+    pflag_sq(p, c, "ropeScaling", "--rope_scaling");
+    pflag_n(p, c, "chunkedPrefillSize", "--chunked_prefill_size");
+    pflag_s(p, c, "prefixCache", "--prefix_cache");
+    pflag_n(p, c, "cudaSlab", "--cuda_slab");
+    // 解码与投机
+    pflag_n(p, c, "mtp", "--mtp");
+    pflag_n(p, c, "dspark", "--dspark");
+    pflag_sq(p, c, "draft", "--draft");
+    pflag_n(p, c, "draftTokens", "--draft_tokens");
+    pflag_s(p, c, "enableThinking", "--enable_thinking");
+    pflag_s(p, c, "toolCallParser", "--tool_call_parser");
+    pflag_sq(p, c, "chatTemplate", "--chat_template");
+    // 服务
+    pflag_s(p, c, "host", "--host");
+    pflag_s(p, c, "modelName", "--model_name");
+    pflag_s(p, c, "apiKey", "--api_key");
+    pflag_n(p, c, "temperature", "--temperature");
+    pflag_n(p, c, "topP", "--top_p");
+    pflag_n(p, c, "topK", "--top_k");
+    pflag_n(p, c, "repeatPenalty", "--repeat_penalty");
+    pflag_on(p, c, "hideInput", "--hide_input");
+    pflag_s(p, c, "startupProgress", "--startup-progress");
+}
+
 /// SGLang 全部可选参数（原生与 Docker 共用），对照 0.5.19 实际版本 --help
 /// 注意：sglang serve 没有 --temperature/--top-p/--top-k/--repetition-penalty/--max-tokens
 /// 这类启动参数（采样是 OpenAI API 每请求参数），传了会 argparse 报错
@@ -442,6 +492,20 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
             }
             Ok(c.join(" "))
         }
+        "fastllm" => {
+            // ftllm 装在 3.12 venv 里（一键安装），裸命令名由启动脚本回退解析
+            let bin = pstr(p, "bin", "ftllm");
+            let mut c = vec![
+                format!("{} server", bin),
+                m.clone(),
+                format!("--port {}", cfg.port),
+            ];
+            push_fastllm_common(p, &mut c);
+            if let Some(v) = pstr_opt(p, "extraArgs") {
+                c.push(norm_args(&v));
+            }
+            Ok(c.join(" "))
+        }
         other => Err(AppError::Other(format!("未知框架: {other}"))),
     }
 }
@@ -449,6 +513,10 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
 fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
     let p = &cfg.params;
     let s = slug(&cfg.name);
+    // FastLLM 暂无官方 Docker 镜像（仓库 Dockerfile 为源码构建的老版 webui），不支持 Docker 模式
+    if cfg.framework == "fastllm" {
+        return Err(AppError::Other("FastLLM 暂无官方 Docker 镜像，不支持 Docker 模式（请使用原生模式）".into()));
+    }
     let image = cfg
         .docker_image
         .clone()
@@ -643,14 +711,24 @@ if [ -n "$_f" ]; then
   [ -n "$_d" ] && echo "$_f ($_d)" || echo "$_f (CPU only)"
 fi
 [ -z "$_v" ] && [ -z "$_f" ] && echo NONE
+echo "==FASTLLM=="
+# ftllm 装在 3.12 venv 里（一键安装）；先查 PATH，再回退到 venv 的 ftllm 二进制
+_v=""
+command -v ftllm >/dev/null 2>&1 && _v=$(ftllm --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/ftllm-venv/bin/ftllm" ]; then
+  _v=$("$HOME/RemoteLLM/frameworks/ftllm-venv/bin/ftllm" --version 2>/dev/null | head -1)
+fi
+[ -n "$_v" ] && echo "$_v"
+[ -z "$_v" ] && echo NONE
 exit 0
 "#;
 
-const DETECT_FRAMEWORKS: [(&str, &str); 4] = [
+const DETECT_FRAMEWORKS: [(&str, &str); 5] = [
     ("vllm", "VLLM"),
     ("1cat-vllm", "1CAT"),
     ("sglang", "SGLANG"),
     ("llama-cpp", "LLAMA"),
+    ("fastllm", "FASTLLM"),
 ];
 
 /// 解析 DETECT_SCRIPT 输出（每段空时输出 NONE，避免把下一段标记当内容）
@@ -767,9 +845,26 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
         );
         prelude = format!(
             "sglang_py=$(command -v python3 2>/dev/null)\n\
-             [ -x {venv_py} ] && sglang_py={venv_py}\n"
+              [ -x {venv_py} ] && sglang_py={venv_py}\n"
         );
         cmd = format!("\"$sglang_py\"{}", &cmd["sglang_py".len()..]);
+    }
+    // FastLLM（ftllm）装在 3.12 venv 里（一键安装），裸命令名不在 PATH 时回退到 venv 的 ftllm 二进制
+    if cfg.framework == "fastllm" {
+        let bin = pstr(&cfg.params, "bin", "ftllm");
+        if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
+            let venv_bin = format!(
+                "{}/frameworks/ftllm-venv/bin/{}",
+                profile.base_dir.trim_end_matches('/'),
+                bin
+            );
+            prelude = format!(
+                "ftllm_bin=$(command -v {bin} 2>/dev/null)\n\
+                  [ -z \"$ftllm_bin\" ] && [ -x {venv_bin} ] && ftllm_bin={venv_bin}\n\
+                  [ -z \"$ftllm_bin\" ] && ftllm_bin={bin}\n"
+            );
+            cmd = format!("\"$ftllm_bin\"{}", &cmd[bin.len()..]);
+        }
     }
     format!(
         "mkdir -p {run} {logs}\n\
@@ -940,9 +1035,9 @@ mod tests {
 
     #[test]
     fn parse_detect_all_none() {
-        let raw = "\n==VLLM==\nNONE\n==1CAT==\nNONE\n==SGLANG==\nNONE\n==LLAMA==\nNONE\n";
+        let raw = "\n==VLLM==\nNONE\n==1CAT==\nNONE\n==SGLANG==\nNONE\n==LLAMA==\nNONE\n==FASTLLM==\nNONE\n";
         let r = parse_detect(raw);
-        assert_eq!(r.len(), 4);
+        assert_eq!(r.len(), 5);
         for d in &r {
             assert!(!d.installed, "{}", d.framework);
             assert_eq!(d.version, None);
@@ -953,7 +1048,7 @@ mod tests {
     #[test]
     fn parse_detect_legacy_marker_leak() {
         // 旧脚本空段时会把下一段标记当内容（vLLM 误报 "已安装 ==1CAT=="）
-        let raw = "\n==VLLM==\n==1CAT==\n==SGLANG==\nNONE\n==LLAMA==\nNONE\n";
+        let raw = "\n==VLLM==\n==1CAT==\n==SGLANG==\nNONE\n==LLAMA==\nNONE\n==FASTLLM==\nNONE\n";
         let r = parse_detect(raw);
         for d in &r {
             assert!(!d.installed, "{}", d.framework);
@@ -1081,6 +1176,81 @@ mod tests {
         let mut c = test_cfg(params);
         c.framework = framework.into();
         c
+    }
+
+    #[test]
+    fn build_command_fastllm_native() {
+        // ftllm server <model> --port <port> + 常用参数；moe_device 比例组合需加引号
+        let cfg = test_cfg_fw(
+            "fastllm",
+            serde_json::json!({
+                "device": "cuda",
+                "tp": "0,1",
+                "gpuMemRatio": 0.85,
+                "moeDevice": "{'cuda':1,'numa':8,'disk':1}",
+                "kvCacheDtype": "fp8_e4m3",
+                "maxContextLength": 131072,
+                "ropeScaling": "yarn",
+                "prefixCache": "true",
+                "mtp": 4,
+                "host": "0.0.0.0",
+                "modelName": "local-model",
+                "extraArgs": "--triton"
+            }),
+        );
+        let cmd = build_command(&cfg).unwrap();
+        assert!(
+            cmd.starts_with("ftllm server '/mnt/m.gguf' --port 8080"),
+            "cmd: {cmd}"
+        );
+        for flag in [
+            "--device cuda",
+            "--tp 0,1",
+            "--gpu_mem_ratio 0.85",
+            "--kv_cache_dtype fp8_e4m3",
+            "--max_context_length 131072",
+            "--rope_scaling 'yarn'",
+            "--prefix_cache true",
+            "--mtp 4",
+            "--host 0.0.0.0",
+            "--model_name local-model",
+            "--triton",
+        ] {
+            assert!(cmd.contains(&flag), "缺少 {flag}；cmd: {cmd}");
+        }
+        // moe_device 比例组合含单引号，必须整体加 shell 引号（shq 把 ' 转成 '\''）
+        let i = cmd.find("--moe_device ").unwrap();
+        let seg = &cmd[i..i + 60];
+        assert!(seg.starts_with("--moe_device '{"), "cmd: {cmd}");
+        for w in ["cuda", "numa", "disk"] {
+            assert!(seg.contains(w), "cmd: {cmd}");
+        }
+    }
+
+    #[test]
+    fn build_command_fastllm_docker_rejected() {
+        // FastLLM 无官方 Docker 镜像，docker 模式直接报错
+        let mut cfg = test_cfg_fw("fastllm", serde_json::json!({}));
+        cfg.mode = "docker".into();
+        assert!(build_command(&cfg).is_err());
+    }
+
+    #[test]
+    fn start_script_resolves_bare_ftllm_bin_to_venv() {
+        // ftllm 装在 3.12 venv，裸命令名回退到 venv 的 ftllm 二进制
+        let mut cfg = test_cfg_fw("fastllm", serde_json::json!({}));
+        cfg.mode = "native".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("ftllm_bin=$(command -v ftllm"), "script: {s}");
+        assert!(s.contains("~/RemoteLLM/frameworks/ftllm-venv/bin/ftllm"), "script: {s}");
+        assert!(s.contains("nohup \"$ftllm_bin\" server"), "script: {s}");
+
+        // bin 为绝对路径时不注入回退
+        let mut cfg2 = test_cfg_fw("fastllm", serde_json::json!({ "bin": "/opt/venv/bin/ftllm" }));
+        cfg2.mode = "native".into();
+        let s2 = start_script(&cfg2, &test_profile());
+        assert!(!s2.contains("ftllm_bin="), "script: {s2}");
+        assert!(s2.contains("nohup /opt/venv/bin/ftllm server"), "script: {s2}");
     }
 
     #[test]

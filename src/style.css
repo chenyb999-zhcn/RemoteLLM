@@ -15,6 +15,10 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+.n-button.is-busy {
+  cursor: wait;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

@@ -40,6 +40,7 @@ export const useInstanceStore = defineStore("instances", {
       delete this.statuses[id];
     },
     async detect(profileId: string) {
+      if (this.detecting) return;
       this.detecting = true;
       try {
         this.detections = await api.detectFrameworks(profileId);
@@ -89,7 +90,7 @@ export const useInstanceStore = defineStore("instances", {
       await this.refreshLogs();
     },
     async refreshLogs() {
-      if (!this.logId) return;
+      if (!this.logId || this.logsLoading) return;
       this.logsLoading = true;
       try {
         const [text, total] = await Promise.all([

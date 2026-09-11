@@ -19,6 +19,7 @@ import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { useSettingsStore } from "../stores/settings";
 import { i18n } from "../i18n";
+import SpinButton from "../components/SpinButton.vue";
 
 const settings = useSettingsStore();
 const { value } = storeToRefs(settings);
@@ -87,6 +88,7 @@ onMounted(async () => {
 });
 
 async function onSave() {
+  if (saving.value) return;
   if (form.proxyEnabled) {
     const u = form.proxyUrl.trim();
     if (!u) {
@@ -217,10 +219,9 @@ async function onSave() {
 
       <n-space justify="end">
         <n-button @click="router.back()">{{ t("common.back") }}</n-button>
-        <n-button type="primary" :loading="saving" @click="onSave">
-          <template #icon><span /></template>
+        <spin-button type="primary" :loading="saving" @click="onSave">
           {{ t("settings.saveSettings") }}
-        </n-button>
+        </spin-button>
       </n-space>
     </n-space>
   </div>

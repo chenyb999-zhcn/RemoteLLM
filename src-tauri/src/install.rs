@@ -129,8 +129,24 @@ pub fn build_install_script(
               exit 1\n\
               fi\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
-              {boot}python3 -m pip install {idx} -e . 2>&1 || python3 -m pip install {idx} -e . --break-system-packages 2>&1",
+               {boot}python3 -m pip install {idx} -e . 2>&1 || python3 -m pip install {idx} -e . --break-system-packages 2>&1",
             boot = pip_bootstrap()
+        ),
+        "fastllm" => format!(
+            "{proxy}mkdir -p {fw_dir}\n\
+              export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
+              # FastLLM（pip 包名 ftllm）：与系统 Python（可能 3.14）隔离，\n\
+              # 统一装进 3.12 venv。用 uv 确保 3.12 可用并建 venv。\n\
+              if ! command -v uv >/dev/null 2>&1; then\n\
+              echo \"[setup] 安装 uv（用于管理 Python 3.12）...\"\n\
+              curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
+              fi\n\
+              uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
+              if [ ! -x {fw_dir}/ftllm-venv/bin/python ]; then\n\
+              uv venv --python 3.12 {fw_dir}/ftllm-venv 2>&1 || {{ echo \"ERROR: 创建 ftllm venv 失败\"; exit 1; }}\n\
+              fi\n\
+              {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' 2>&1 \
+              || {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' --break-system-packages 2>&1",
         ),
         "llama-cpp" => format!(
             "{proxy}{deb}mkdir -p {fw_dir}\ncd {fw_dir}\n\
@@ -182,6 +198,10 @@ pub fn build_install_script(
         "uninstall-llama-cpp" => format!(
             "echo \"[uninstall] 删除 llama.cpp 源码与构建目录（不影响其它引擎）\"\n\
              rm -rf {fw_dir}/llama.cpp"
+        ),
+        "uninstall-fastllm" => format!(
+            "echo \"[uninstall] 删除 ftllm 专用 venv（不影响其它引擎）\"\n\
+             rm -rf {fw_dir}/ftllm-venv"
         ),
         other => return Err(AppError::Other(format!("未知安装项: {other}"))),
     })
@@ -351,5 +371,21 @@ mod tests {
         let v = build_install_script(&profile(), &d, "vllm", None).unwrap();
         assert!(!v.contains("sglang-venv"), "vllm 不应建 sglang venv");
         assert!(!v.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY"), "vllm 不应设 ABI3");
+    }
+
+    #[test]
+    fn fastllm_install_uses_python312_venv() {
+        // FastLLM（pip 包名 ftllm）与系统 Python 隔离，装进 3.12 venv
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "fastllm", None).unwrap();
+        assert!(s.contains("uv python install 3.12"), "fastllm 未装 Python 3.12: {s}");
+        assert!(s.contains("uv venv --python 3.12"), "fastllm 未建 3.12 venv: {s}");
+        assert!(s.contains("ftllm-venv/bin/python -m pip install"), "fastllm 未装进 venv: {s}");
+        assert!(s.contains("'ftllm'"), "fastllm 包名错误: {s}");
+        // 卸载：删整个 venv（ftllm 及其依赖都在 venv 内）
+        let u = build_install_script(&profile(), &d, "uninstall-fastllm", None).unwrap();
+        assert!(u.contains("rm -rf"), "fastllm 卸载未删目录");
+        assert!(u.contains("ftllm-venv"), "fastllm 卸载目录名错误");
+        assert!(!u.contains("uninstall -y 'torch'"), "fastllm 卸载误删 torch");
     }
 }

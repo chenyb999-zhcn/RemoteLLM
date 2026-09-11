@@ -58,7 +58,7 @@ export const useServerStore = defineStore("server", {
       }
     },
     async refreshEnv() {
-      if (!this.currentId) return;
+      if (!this.currentId || this.envLoading) return;
       this.envLoading = true;
       try {
         this.env = await api.envCheck(this.currentId);

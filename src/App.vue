@@ -30,6 +30,7 @@ import { i18n } from "./i18n";
 import { api, onTaskStream, startTaskBus } from "./lib/api";
 import DockerInstaller from "./components/DockerInstaller.vue";
 import StreamLog from "./components/StreamLog.vue";
+import SpinButton from "./components/SpinButton.vue";
 import type { DockerStatus } from "./lib/types";
 
 const store = useServerStore();
@@ -335,15 +336,14 @@ async function onDisconnect() {
                 <n-tag v-if="connInfo" type="success" size="small">
                   {{ connInfo.user }}@{{ connInfo.host }}
                 </n-tag>
-                <n-button
+                <spin-button
                   quaternary
                   size="small"
                   :loading="connecting"
                   @click="onDisconnect"
                 >
-                  <template #icon><span /></template>
                   {{ t("app.disconnect") }}
-                </n-button>
+                </spin-button>
               </n-space>
             </n-layout-header>
             <n-layout-content content-style="padding: 16px">

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted } from "vue";
 import {
-  NButton,
   NCard,
   NDataTable,
   NEmpty,
@@ -23,6 +22,7 @@ import { useDashboardStore, metricKey, TOKEN_RATE_KEY } from "../stores/dashboar
 import { fmtBytes } from "../lib/api";
 import type { GpuPoll, MetricSample, ProcRow } from "../lib/types";
 import LineChart from "../components/LineChart.vue";
+import SpinButton from "../components/SpinButton.vue";
 import type { Series } from "../components/LineChart.vue";
 
 const store = useServerStore();
@@ -234,10 +234,9 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
         <n-tag v-if="pollError" type="error" size="small">
           {{ t("dashboard.pollError", { err: pollError }) }}
         </n-tag>
-        <n-button size="small" :loading="envLoading" @click="onRefreshEnv">
-          <template #icon><span /></template>
+        <spin-button size="small" :loading="envLoading" @click="onRefreshEnv">
           {{ t("dashboard.refreshEnv") }}
-        </n-button>
+        </spin-button>
       </n-space>
     </n-space>
 
@@ -367,15 +366,14 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
           size="small"
           style="width: 110px"
         />
-        <n-button
+        <spin-button
           size="small"
           type="primary"
           :loading="metricsLoading"
           @click="onFetchMetrics"
         >
-          <template #icon><span /></template>
           {{ t("dashboard.fetch") }}
-        </n-button>
+        </spin-button>
         <n-switch v-model:value="dash.metricsAuto" size="small" />
         <span style="color: #999; font-size: 12px">{{ t("dashboard.autoHint") }}</span>
         <div v-if="metricsErr" class="err-text" :title="metricsErr">{{ metricsErr }}</div>

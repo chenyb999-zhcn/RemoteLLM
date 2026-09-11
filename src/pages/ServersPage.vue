@@ -22,6 +22,7 @@ import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 import { useServerStore } from "../stores/server";
 import type { ServerProfile } from "../lib/types";
+import SpinButton from "../components/SpinButton.vue";
 
 const store = useServerStore();
 const { profiles, currentId, connecting } = storeToRefs(store);
@@ -184,7 +185,7 @@ const columns = computed<DataTableColumns<ServerProfile>>(() => [
       h(NSpace, {}, {
         default: () => [
           h(
-            NButton,
+            SpinButton,
             {
               size: "small",
               type: p.id === currentId.value ? "primary" : "default",
@@ -193,7 +194,6 @@ const columns = computed<DataTableColumns<ServerProfile>>(() => [
               onClick: () => doConnect(p),
             },
             {
-              icon: () => h("span"),
               default: () =>
                 p.id === currentId.value ? t("servers.btnConnected") : t("servers.btnConnect"),
             },

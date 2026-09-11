@@ -46,6 +46,7 @@ import { api, onTaskStream } from "../lib/api";
 import { i18n } from "../i18n";
 import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
+import SpinButton from "../components/SpinButton.vue";
 import type { DockerStatus, InstanceConfig, LocalImage, LocalModel } from "../lib/types";
 
 import { FW_META, type ParamDef, type FwTab } from "../lib/fwParams";
@@ -205,6 +206,8 @@ function onFrameworkChange() {
   } else {
     form.params = defaultParams(form.framework);
   }
+  // 仅原生模式的框架（无官方 Docker 镜像）固定为原生
+  if (FW_META[form.framework]?.nativeOnly) form.mode = "native";
 }
 
 // ---------- 本地模型列表（实例表单模型下拉 / 投机解码 draft 模型下拉，懒加载） ----------
@@ -250,7 +253,11 @@ function openEdit(inst: InstanceConfig) {
   form.id = inst.id;
   form.name = inst.name;
   form.framework = inst.framework;
-  form.mode = isCustomFwFor(inst.framework) ? "docker" : inst.mode;
+  form.mode = isCustomFwFor(inst.framework)
+    ? "docker"
+    : FW_META[inst.framework]?.nativeOnly
+      ? "native"
+      : inst.mode;
   form.modelPath = inst.modelPath;
   form.port = inst.port;
   form.dockerImage = inst.dockerImage ?? fwOption(inst.framework)?.image ?? "";
@@ -355,6 +362,7 @@ async function onSubmit() {
 
 // ---------- 操作 ----------
 async function doStart(inst: InstanceConfig) {
+  if (starting.value[inst.id]) return;
   try {
     const r = await store.start(inst.id);
     message.success(r);
@@ -364,6 +372,7 @@ async function doStart(inst: InstanceConfig) {
 }
 
 async function doStop(inst: InstanceConfig) {
+  if (stopping.value[inst.id]) return;
   try {
     const r = await store.stop(inst.id);
     message.info(r);
@@ -433,13 +442,13 @@ const columns = computed<DataTableColumns<InstanceConfig>>(() => [
   {
     title: t("common.actions"),
     key: "actions",
-    width: 360,
+    width: 420,
     render: (i) => {
       const s = statuses.value[i.id];
       return h(NSpace, { size: 6 }, {
         default: () => [
           h(
-            NButton,
+            SpinButton,
             {
               size: "small",
               type: "primary",
@@ -450,7 +459,7 @@ const columns = computed<DataTableColumns<InstanceConfig>>(() => [
             { default: () => t("common.start") },
           ),
           h(
-            NButton,
+            SpinButton,
             {
               size: "small",
               type: "warning",
@@ -470,7 +479,7 @@ const columns = computed<DataTableColumns<InstanceConfig>>(() => [
 ]);
 
 const detectionCards = computed(() =>
-  ["vllm", "1cat-vllm", "sglang", "llama-cpp"].map((fw) => {
+  ["vllm", "1cat-vllm", "sglang", "llama-cpp", "fastllm"].map((fw) => {
     const d = detections.value.find((x) => x.framework === fw);
     return {
       fw,
@@ -490,6 +499,7 @@ const NATIVE_TOOL: Record<string, string> = {
   "1cat-vllm": "1cat-vllm",
   sglang: "sglang",
   "llama-cpp": "llama-cpp",
+  fastllm: "fastllm",
 };
 const installShow = ref(false);
 const installScript = ref("");
@@ -590,7 +600,7 @@ const cancelPull = ref<null | (() => Promise<void>)>(null);
 
 async function loadDocker() {
   const pid = current.value?.id;
-  if (!pid) return;
+  if (!pid || imagesLoading.value) return;
   imagesLoading.value = true;
   try {
     const [st, imgs] = await Promise.all([
@@ -766,11 +776,11 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
   {
     title: t("common.actions"),
     key: "actions",
-    width: 130,
+    width: 160,
     render: (r) =>
       h(NSpace, { size: 6 }, {
         default: () => [
-          h(NButton, {
+          h(SpinButton, {
             size: "small",
             type: "primary",
             ghost: true,
@@ -977,19 +987,17 @@ function paramTooltip(p: ParamDef): string {
           >
             {{ t("init.fixDockerAuth") }}
           </n-button>
-          <n-button size="small" :loading="imagesLoading" @click="loadDocker()">
-            <template #icon><span /></template>
+          <spin-button size="small" :loading="imagesLoading" @click="loadDocker()">
             {{ t("common.refresh") }}
-          </n-button>
-          <n-button
+          </spin-button>
+          <spin-button
             v-if="dockerStatus?.installed && dockerStatus.usable"
             size="small"
             :loading="gpuTesting"
             @click="doGpuTest"
           >
-            <template #icon><span /></template>
             {{ t("fw.testGpu") }}
-          </n-button>
+          </spin-button>
         </n-space>
       </template>
       <n-data-table
@@ -1011,15 +1019,14 @@ function paramTooltip(p: ParamDef): string {
           style="width: 420px"
           :disabled="!canUseDocker"
         />
-        <n-button
+        <spin-button
           type="primary"
           :loading="pulling && pullImage === customImage"
           :disabled="!customLabel.trim() || !customImage.trim() || pulling || !canUseDocker"
           @click="doAddCustomFramework"
         >
-          <template #icon><span /></template>
           {{ t("common.add") }}
-        </n-button>
+        </spin-button>
       </n-space>
       <div class="fw-desc" style="margin-top: 8px">
         {{ t("fw.customHint") }}
@@ -1029,10 +1036,9 @@ function paramTooltip(p: ParamDef): string {
     <!-- 原生框架管理 -->
     <n-card size="small" :title="t('fw.nativeCard')" style="margin-bottom: 16px">
       <template #header-extra>
-        <n-button size="small" :loading="detecting" @click="current && store.detect(current.id)">
-          <template #icon><span /></template>
+        <spin-button size="small" :loading="detecting" @click="current && store.detect(current.id)">
           {{ t("gpu.redetect") }}
-        </n-button>
+        </spin-button>
       </template>
       <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:4" responsive="screen">
         <n-grid-item v-for="c in detectionCards" :key="c.fw">
@@ -1123,7 +1129,8 @@ function paramTooltip(p: ParamDef): string {
 
         <!-- 内置框架：保留完整参数设置 -->
         <template v-else>
-          <n-form-item :label="t('fw.runMode')">
+          <!-- 仅原生模式的框架（如 FastLLM，无官方 Docker 镜像）不显示运行方式 -->
+          <n-form-item v-if="!meta?.nativeOnly" :label="t('fw.runMode')">
             <n-radio-group v-model:value="form.mode">
               <n-radio-button value="native">{{ t("fw.modeNative") }}</n-radio-button>
               <n-radio-button value="docker">{{ t("fw.modeDocker") }}</n-radio-button>
@@ -1339,10 +1346,9 @@ function paramTooltip(p: ParamDef): string {
             <span>{{ t("fw.logsTitle") }}</span>
             <n-space align="center">
               <n-checkbox v-model:checked="autoRefreshLogs">{{ t("fw.autoRefresh") }}</n-checkbox>
-              <n-button size="small" :loading="logsLoading" @click="store.refreshLogs()">
-                <template #icon><span /></template>
+              <spin-button size="small" :loading="logsLoading" @click="store.refreshLogs()">
                 {{ t("common.refresh") }}
-              </n-button>
+              </spin-button>
             </n-space>
           </n-space>
         </template>

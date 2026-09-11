@@ -20,6 +20,7 @@ import { api, onTaskStream } from "../lib/api";
 import type { DockerStatus, InitCheckResult, InitItem } from "../lib/types";
 import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
+import SpinButton from "../components/SpinButton.vue";
 
 const store = useServerStore();
 const { current } = storeToRefs(store);
@@ -283,10 +284,9 @@ onBeforeUnmount(() => {
           <n-tag type="warning" size="small">{{ t("init.warnCount", { n: result.warnCount }) }}</n-tag>
           <n-tag type="error" size="small">{{ t("init.missingCount", { n: result.missingCount }) }}</n-tag>
         </template>
-        <n-button size="small" :loading="loading" @click="refresh">
-          <template #icon><span /></template>
+        <spin-button size="small" :loading="loading" @click="refresh">
           {{ t("gpu.redetect") }}
-        </n-button>
+        </spin-button>
       </n-space>
     </n-space>
 

@@ -29,6 +29,7 @@ import { i18n } from "../i18n";
 import type { LocalModel, ModelInfo, ParserLibsStatus, RepoFile } from "../lib/types";
 import { useClipboard } from "@vueuse/core";
 import StreamLog from "../components/StreamLog.vue";
+import SpinButton from "../components/SpinButton.vue";
 
 const store = useServerStore();
 const { current } = storeToRefs(store);
@@ -160,6 +161,7 @@ const dlDone = ref<number | null>(null);
 const cancelTask = ref<null | (() => Promise<void>)>(null);
 
 async function onSearch() {
+  if (searching.value) return;
   if (!query.value.trim() && activeTab.value === "huggingface") {
     message.warning(t("models.needKeyword"));
     return;
@@ -178,7 +180,7 @@ async function onSearch() {
 
 async function refreshLocal() {
   const id = current.value?.id;
-  if (!id) return;
+  if (!id || localLoading.value) return;
   localLoading.value = true;
   try {
     localModels.value = await api.listLocalModels(id);
@@ -446,10 +448,9 @@ onBeforeUnmount(() => {
           @keyup.enter="onSearch"
         />
         <n-input-number v-model:value="limit" :min="1" :max="50" style="width: 100px" />
-        <n-button type="primary" :loading="searching" @click="onSearch">
-          <template #icon><span /></template>
+        <spin-button type="primary" :loading="searching" @click="onSearch">
           {{ t("common.search") }}
-        </n-button>
+        </spin-button>
       </n-space>
 
       <n-data-table
@@ -477,10 +478,9 @@ onBeforeUnmount(() => {
           >
             {{ t("init.fixParser") }}
           </n-button>
-          <n-button size="small" :loading="localLoading" @click="refreshLocal">
-            <template #icon><span /></template>
+          <spin-button size="small" :loading="localLoading" @click="refreshLocal">
             {{ t("common.refresh") }}
-          </n-button>
+          </spin-button>
         </n-space>
       </template>
       <n-data-table
