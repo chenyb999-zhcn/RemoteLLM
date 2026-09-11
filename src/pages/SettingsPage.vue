@@ -218,6 +218,7 @@ async function onSave() {
       <n-space justify="end">
         <n-button @click="router.back()">{{ t("common.back") }}</n-button>
         <n-button type="primary" :loading="saving" @click="onSave">
+          <template #icon><span /></template>
           {{ t("settings.saveSettings") }}
         </n-button>
       </n-space>

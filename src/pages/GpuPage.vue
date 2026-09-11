@@ -293,7 +293,10 @@ onBeforeUnmount(() => {
         <n-tag v-if="mergedCards.length" size="small">
           {{ t("gpu.driverTag", { v: mergedCards[0].driver || "-" }) }}
         </n-tag>
-        <n-button size="small" :loading="loading" @click="refresh">{{ t("gpu.redetect") }}</n-button>
+        <n-button size="small" :loading="loading" @click="refresh">
+          <template #icon><span /></template>
+          {{ t("gpu.redetect") }}
+        </n-button>
       </n-space>
     </n-space>
 

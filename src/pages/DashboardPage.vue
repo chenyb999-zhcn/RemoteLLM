@@ -235,6 +235,7 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
           {{ t("dashboard.pollError", { err: pollError }) }}
         </n-tag>
         <n-button size="small" :loading="envLoading" @click="onRefreshEnv">
+          <template #icon><span /></template>
           {{ t("dashboard.refreshEnv") }}
         </n-button>
       </n-space>
@@ -372,11 +373,12 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
           :loading="metricsLoading"
           @click="onFetchMetrics"
         >
+          <template #icon><span /></template>
           {{ t("dashboard.fetch") }}
         </n-button>
         <n-switch v-model:value="dash.metricsAuto" size="small" />
         <span style="color: #999; font-size: 12px">{{ t("dashboard.autoHint") }}</span>
-        <span v-if="metricsErr" class="err-text">{{ metricsErr }}</span>
+        <div v-if="metricsErr" class="err-text" :title="metricsErr">{{ metricsErr }}</div>
       </n-space>
 
       <!-- 勾选指标的折线图（每个指标一张小图，避免量纲混用） -->
@@ -464,5 +466,10 @@ const metricColumns = computed<DataTableColumns<MetricSample>>(() => [
 .err-text {
   color: #e88080;
   font-size: 12px;
+  display: block;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

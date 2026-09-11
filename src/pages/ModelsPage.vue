@@ -446,7 +446,10 @@ onBeforeUnmount(() => {
           @keyup.enter="onSearch"
         />
         <n-input-number v-model:value="limit" :min="1" :max="50" style="width: 100px" />
-        <n-button type="primary" :loading="searching" @click="onSearch">{{ t("common.search") }}</n-button>
+        <n-button type="primary" :loading="searching" @click="onSearch">
+          <template #icon><span /></template>
+          {{ t("common.search") }}
+        </n-button>
       </n-space>
 
       <n-data-table
@@ -474,7 +477,10 @@ onBeforeUnmount(() => {
           >
             {{ t("init.fixParser") }}
           </n-button>
-          <n-button size="small" :loading="localLoading" @click="refreshLocal">{{ t("common.refresh") }}</n-button>
+          <n-button size="small" :loading="localLoading" @click="refreshLocal">
+            <template #icon><span /></template>
+            {{ t("common.refresh") }}
+          </n-button>
         </n-space>
       </template>
       <n-data-table

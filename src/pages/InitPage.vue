@@ -283,7 +283,10 @@ onBeforeUnmount(() => {
           <n-tag type="warning" size="small">{{ t("init.warnCount", { n: result.warnCount }) }}</n-tag>
           <n-tag type="error" size="small">{{ t("init.missingCount", { n: result.missingCount }) }}</n-tag>
         </template>
-        <n-button size="small" :loading="loading" @click="refresh">{{ t("gpu.redetect") }}</n-button>
+        <n-button size="small" :loading="loading" @click="refresh">
+          <template #icon><span /></template>
+          {{ t("gpu.redetect") }}
+        </n-button>
       </n-space>
     </n-space>
 

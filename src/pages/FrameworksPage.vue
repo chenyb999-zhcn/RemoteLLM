@@ -978,6 +978,7 @@ function paramTooltip(p: ParamDef): string {
             {{ t("init.fixDockerAuth") }}
           </n-button>
           <n-button size="small" :loading="imagesLoading" @click="loadDocker()">
+            <template #icon><span /></template>
             {{ t("common.refresh") }}
           </n-button>
           <n-button
@@ -986,6 +987,7 @@ function paramTooltip(p: ParamDef): string {
             :loading="gpuTesting"
             @click="doGpuTest"
           >
+            <template #icon><span /></template>
             {{ t("fw.testGpu") }}
           </n-button>
         </n-space>
@@ -1015,6 +1017,7 @@ function paramTooltip(p: ParamDef): string {
           :disabled="!customLabel.trim() || !customImage.trim() || pulling || !canUseDocker"
           @click="doAddCustomFramework"
         >
+          <template #icon><span /></template>
           {{ t("common.add") }}
         </n-button>
       </n-space>
@@ -1027,6 +1030,7 @@ function paramTooltip(p: ParamDef): string {
     <n-card size="small" :title="t('fw.nativeCard')" style="margin-bottom: 16px">
       <template #header-extra>
         <n-button size="small" :loading="detecting" @click="current && store.detect(current.id)">
+          <template #icon><span /></template>
           {{ t("gpu.redetect") }}
         </n-button>
       </template>
@@ -1336,6 +1340,7 @@ function paramTooltip(p: ParamDef): string {
             <n-space align="center">
               <n-checkbox v-model:checked="autoRefreshLogs">{{ t("fw.autoRefresh") }}</n-checkbox>
               <n-button size="small" :loading="logsLoading" @click="store.refreshLogs()">
+                <template #icon><span /></template>
                 {{ t("common.refresh") }}
               </n-button>
             </n-space>

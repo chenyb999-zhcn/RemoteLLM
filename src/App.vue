@@ -341,6 +341,7 @@ async function onDisconnect() {
                   :loading="connecting"
                   @click="onDisconnect"
                 >
+                  <template #icon><span /></template>
                   {{ t("app.disconnect") }}
                 </n-button>
               </n-space>

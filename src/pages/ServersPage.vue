@@ -193,6 +193,7 @@ const columns = computed<DataTableColumns<ServerProfile>>(() => [
               onClick: () => doConnect(p),
             },
             {
+              icon: () => h("span"),
               default: () =>
                 p.id === currentId.value ? t("servers.btnConnected") : t("servers.btnConnect"),
             },
