@@ -206,7 +206,7 @@ function onFrameworkChange() {
   } else {
     form.params = defaultParams(form.framework);
   }
-  // 仅原生模式的框架（无官方 Docker 镜像）固定为原生
+  // nativeOnly 框架固定为原生模式
   if (FW_META[form.framework]?.nativeOnly) form.mode = "native";
 }
 
@@ -665,6 +665,7 @@ const builtinImages = computed(() => {
     { label: "vLLM", image: "vllm/vllm-openai:latest", isDefault: false },
     { label: "SGLang", image: "lmsysorg/sglang:latest-cu129", isDefault: false },
     { label: "llama.cpp", image: "ghcr.io/ggml-org/llama.cpp:server-cuda", isDefault: false },
+    { label: "FastLLM", image: "docker.io/garenleeasa/ftllm:v0.1.8.1", isDefault: true },
     ...settings.value.customFrameworks.map((c) => ({
       label: c.label,
       image: c.image,
@@ -1138,7 +1139,7 @@ function paramTooltip(p: ParamDef): string {
 
         <!-- 内置框架：保留完整参数设置 -->
         <template v-else>
-          <!-- 仅原生模式的框架（如 FastLLM，无官方 Docker 镜像）不显示运行方式 -->
+          <!-- nativeOnly 框架不显示运行方式（当前内置框架均已支持 Docker 模式） -->
           <n-form-item v-if="!meta?.nativeOnly" :label="t('fw.runMode')">
             <n-radio-group v-model:value="form.mode">
               <n-radio-button value="native">{{ t("fw.modeNative") }}</n-radio-button>

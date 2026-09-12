@@ -30,6 +30,8 @@ export interface AppSettings {
   proxyUrl: string;
   /** pip 镜像源 id：tuna/aliyun/ustc/huawei/tencent/pypi */
   pipIndex: string;
+  /** uv python install 3.12 下载镜像前缀（空 = 官方 GitHub） */
+  uvPythonMirror: string;
   /** deb(apt) 镜像源 id：tuna/aliyun/ustc/huawei/tencent/official */
   debMirror: string;
   /** 用户添加的自定义框架镜像（框架管理页） */

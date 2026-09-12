@@ -39,6 +39,7 @@ const form = reactive({
   proxyEnabled: false,
   proxyUrl: "",
   pipIndex: "tuna",
+  uvPythonMirror: "",
   debMirror: "tuna",
 });
 
@@ -84,6 +85,7 @@ onMounted(async () => {
   form.proxyEnabled = value.value.proxyEnabled;
   form.proxyUrl = value.value.proxyUrl;
   form.pipIndex = value.value.pipIndex || "tuna";
+  form.uvPythonMirror = value.value.uvPythonMirror || "";
   form.debMirror = value.value.debMirror || "tuna";
 });
 
@@ -114,6 +116,7 @@ async function onSave() {
       proxyEnabled: form.proxyEnabled,
       proxyUrl: form.proxyUrl.trim(),
       pipIndex: form.pipIndex,
+      uvPythonMirror: form.uvPythonMirror.trim(),
       debMirror: form.debMirror,
     });
     message.success(t("settings.saved"));
@@ -200,6 +203,13 @@ async function onSave() {
           <n-form-item :label="t('settings.pipIndex')">
             <n-select v-model:value="form.pipIndex" :options="pipIndexOptions" style="width: 220px" />
             <span class="hint">{{ t("settings.pipHint") }}</span>
+          </n-form-item>
+          <n-form-item :label="t('settings.uvPythonMirror')">
+            <n-input
+              v-model:value="form.uvPythonMirror"
+              :placeholder="t('settings.uvPythonMirrorPh')"
+              style="width: 220px"
+            />
           </n-form-item>
           <n-form-item :label="t('settings.debMirror')">
             <n-select v-model:value="form.debMirror" :options="debMirrorOptions" style="width: 220px" />

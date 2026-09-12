@@ -287,6 +287,14 @@ pub async fn ssh_connect(
         ),
     }
     let mut session = connect_result?;
+    // 自动创建工作根目录及三个子目录（models/run/logs，父目录一并创建）；失败不阻断连接
+    let mkdir = format!(
+        "mkdir -p {} {} {} 2>/dev/null; true",
+        profile.default_models_dir(),
+        profile.run_dir(),
+        profile.logs_dir()
+    );
+    let _ = session.run(&mkdir).await;
     let version = session
         .run("cat /etc/issue 2>/dev/null | head -1")
         .await

@@ -774,6 +774,7 @@ pub fn build_items(
         ("engine.img.sglang", "SGLang 镜像", "lmsysorg/sglang"),
         ("engine.img.llama", "llama.cpp 镜像", "ggml-org/llama.cpp"),
         ("engine.img.onecat", "1Cat-vLLM 镜像", default_onecat_image),
+        ("engine.img.fastllm", "FastLLM 镜像", "garenleeasa/ftllm"),
     ];
     for (id, label, repo) in imgs {
         let hit = s

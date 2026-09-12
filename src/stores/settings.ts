@@ -15,6 +15,7 @@ const DEFAULTS: AppSettings = {
   proxyEnabled: false,
   proxyUrl: "",
   pipIndex: "tuna",
+  uvPythonMirror: "",
   debMirror: "tuna",
   customFrameworks: [],
 };

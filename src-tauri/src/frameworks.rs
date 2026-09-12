@@ -315,7 +315,7 @@ fn push_1cat_extra(p: &serde_json::Value, c: &mut Vec<String>) {
     pflag_s(p, c, "performanceMode", "--performance-mode");
 }
 
-/// FastLLM 全部可选参数（仅原生模式），对照 https://github.com/ztxz16/fastllm README「常用参数」
+/// FastLLM 全部可选参数（原生与 Docker 共用），对照 https://github.com/ztxz16/fastllm README「常用参数」
 /// 服务入口 ftllm server <model>（OpenAI 兼容 API）。注意 --startup-progress 是连字符，
 /// 其余长参数为下划线形式（README 列出的别名如 --max-context-length 未采用）。
 fn push_fastllm_common(p: &serde_json::Value, c: &mut Vec<String>) {
@@ -514,10 +514,6 @@ fn build_command(cfg: &InstanceConfig) -> Result<String, AppError> {
 fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
     let p = &cfg.params;
     let s = slug(&cfg.name);
-    // FastLLM 暂无官方 Docker 镜像（仓库 Dockerfile 为源码构建的老版 webui），不支持 Docker 模式
-    if cfg.framework == "fastllm" {
-        return Err(AppError::Other("FastLLM 暂无官方 Docker 镜像，不支持 Docker 模式（请使用原生模式）".into()));
-    }
     let image = cfg
         .docker_image
         .clone()
@@ -538,7 +534,13 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
     }
     match cfg.framework.as_str() {
         "vllm" | "1cat-vllm" => {
-            run.push(format!("--model {}", m));
+            // 官方镜像 vllm/vllm-openai 的 entrypoint 即 ["vllm","serve"]，模型是位置参数；
+            // 1cat-vllm 镜像 entrypoint 是 NGC 包装（exec 命令），须显式写 `vllm serve`
+            if cfg.framework == "1cat-vllm" {
+                run.push(format!("vllm serve {}", m));
+            } else {
+                run.push(m.clone());
+            }
             run.push(format!("--port {}", cfg.port));
             run.push(format!("--tensor-parallel-size {}", pnum(p, "tp", 1)));
             push_vllm_common(p, &mut run);
@@ -550,6 +552,8 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             }
         }
         "sglang" => {
+            // 官方镜像 entrypoint 是 NGC 包装（默认 CMD bash），须显式写完整启动命令
+            run.push("python -m sglang.launch_server".into());
             run.push(format!("--model-path {}", m));
             run.push(format!("--port {}", cfg.port));
             run.push(format!("--tp {}", pnum(p, "tp", 1)));
@@ -581,6 +585,16 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
                 run.push(norm_args(&v));
             }
         }
+        "fastllm" => {
+            // 默认镜像 docker.io/garenleeasa/ftllm 的 entrypoint 即 ftllm 本体（miniconda3），纯参数即可；
+            // 自建 ghcr 镜像（NGC 包装 entrypoint）走自定义镜像 + customCmd，需自行写 `ftllm server`
+            run.push(format!("server {}", m));
+            run.push(format!("--port {}", cfg.port));
+            push_fastllm_common(p, &mut run);
+            if let Some(v) = pstr_opt(p, "extraArgs") {
+                run.push(norm_args(&v));
+            }
+        }
         other => return Err(AppError::Other(format!("未知框架: {other}"))),
     }
     Ok(run.join(" "))
@@ -591,6 +605,7 @@ fn default_docker_image(fw: &str) -> String {
         "vllm" => "vllm/vllm-openai:latest".into(),
         "1cat-vllm" => "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5".into(),
         "sglang" => "lmsysorg/sglang:latest-cu129".into(),
+        "fastllm" => "docker.io/garenleeasa/ftllm:v0.1.8.1".into(),
         _ => "ghcr.io/ggml-org/llama.cpp:server-cuda".into(),
     }
 }
@@ -1251,11 +1266,23 @@ mod tests {
     }
 
     #[test]
-    fn build_command_fastllm_docker_rejected() {
-        // FastLLM 无官方 Docker 镜像，docker 模式直接报错
-        let mut cfg = test_cfg_fw("fastllm", serde_json::json!({}));
+    fn build_command_fastllm_docker() {
+        // docker 模式：默认镜像 entrypoint 即 ftllm 本体，容器内命令为纯参数 server <model> --port <port>
+        let mut cfg = test_cfg_fw("fastllm", serde_json::json!({ "kvCacheDtype": "fp8_e4m3" }));
         cfg.mode = "docker".into();
-        assert!(build_command(&cfg).is_err());
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        assert!(cmd.contains("docker.io/garenleeasa/ftllm:v0.1.8.1"), "cmd: {cmd}");
+        assert!(cmd.contains("server '/mnt/m.gguf' --port 8080"), "cmd: {cmd}");
+        assert!(cmd.contains("--kv_cache_dtype fp8_e4m3"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn default_docker_image_fastllm() {
+        assert_eq!(
+            default_docker_image("fastllm"),
+            "docker.io/garenleeasa/ftllm:v0.1.8.1"
+        );
     }
 
     #[test]
@@ -1325,9 +1352,24 @@ mod tests {
         cfg.mode = "docker".into();
         let cmd = build_command(&cfg).unwrap();
         assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        // 官方镜像 entrypoint 即 ["vllm","serve"]：模型是位置参数，无 --model
+        assert!(cmd.contains("vllm/vllm-openai:latest '/mnt/m.gguf' --port 8080"), "cmd: {cmd}");
+        assert!(!cmd.contains("--model "), "cmd: {cmd}");
         assert!(cmd.contains("--tensor-parallel-size 1"), "cmd: {cmd}");
         assert!(cmd.contains("--max-num-seqs 32"), "cmd: {cmd}");
         assert!(!cmd.contains("--temperature"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_command_1cat_docker() {
+        // 1cat 镜像 entrypoint 是 NGC 包装：须显式 `vllm serve`，模型位置参数
+        let mut cfg = test_cfg_fw("1cat-vllm", serde_json::json!({ "tp": 1 }));
+        cfg.mode = "docker".into();
+        let cmd = build_command(&cfg).unwrap();
+        assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        assert!(cmd.contains("ghcr.io/chenyb999-zhcn/1cat-vllm:1.5"), "cmd: {cmd}");
+        assert!(cmd.contains("vllm serve '/mnt/m.gguf' --port 8080"), "cmd: {cmd}");
+        assert!(!cmd.contains("--model "), "cmd: {cmd}");
     }
 
     #[test]
@@ -1383,6 +1425,11 @@ mod tests {
         cfg.mode = "docker".into();
         let cmd = build_command(&cfg).unwrap();
         assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
+        // 官方镜像 entrypoint 是 NGC 包装（默认 CMD bash）：须显式完整启动命令
+        assert!(
+            cmd.contains("python -m sglang.launch_server --model-path '/mnt/m.gguf' --port 8080"),
+            "cmd: {cmd}"
+        );
         assert!(cmd.contains("--tp 2"), "cmd: {cmd}");
         assert!(cmd.contains("--max-running-requests 64"), "cmd: {cmd}");
         assert!(!cmd.contains("--top-p"), "cmd: {cmd}");

@@ -916,7 +916,7 @@ pub async fn list_local_models(
 
     // 第一步：轻量扫描（~1s）拿指纹 + 最新条目；指纹命中缓存（内存 → 持久化）则
     // 合并缓存的解析元数据直接返回，应用重启后同样秒开
-    let light = format!("python3 - \"{}\" light <<'RLPY'\n{}\nRLPY", dir, LIST_MODELS_PY);
+    let light = format!("mkdir -p {} 2>/dev/null\npython3 - \"{}\" light <<'RLPY'\n{}\nRLPY", dir, dir, LIST_MODELS_PY);
     let mut fp: Option<String> = None;
     if let Ok(out) = run_on(&state, &profile_id, &light).await {
         if out.exit_code == 2 {
@@ -967,7 +967,7 @@ pub async fn list_local_models(
     }
 
     // 第二步：全量扫描（解析 GGUF/safetensors 头部，较慢）并更新缓存（内存 + 持久化）
-    let script = format!("python3 - \"{}\" <<'RLPY'\n{}\nRLPY", dir, LIST_MODELS_PY);
+    let script = format!("mkdir -p {} 2>/dev/null\npython3 - \"{}\" <<'RLPY'\n{}\nRLPY", dir, dir, LIST_MODELS_PY);
     let out = run_on(&state, &profile_id, &script).await?;
     if out.exit_code == 2 {
         let msg = out.stderr.trim();

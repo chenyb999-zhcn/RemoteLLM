@@ -13,11 +13,11 @@
 
 - **服务器管理**：多服务器档案（密码 / 公钥认证），SSH 连接与断开，启动自动连接
 - **总览**：环境信息卡片；GPU 利用率 / 显存 / 温度 / 功耗实时曲线、GPU 进程列表（pmon）；推理服务 `/metrics` 指标抓取 + 折线图（自动勾选关键指标 + 手动勾选、自动刷新；含 Token 生成速率（tokens/s）派生指标，两个累计计数器相邻采样差值相除）
-- **环境检查**：25 项体检，一键修复（pip / apt sudo / Docker 安装授权 / uv 装 Python 3.12 / 跳转拉取）；含 Python 3.12 检查项（原生框架 venv 底座）；dpkg + pip 双通道检测 12 个 CUDA 库（cuBLAS / cuDNN / NCCL / TensorRT-LLM 等）；V100 等 sm70 卡型兼容性提示
+- **环境检查**：26 项体检，一键修复（pip / apt sudo / Docker 安装授权 / uv 装 Python 3.12 / 跳转拉取）；含 Python 3.12 检查项（原生框架 venv 底座）；dpkg + pip 双通道检测 12 个 CUDA 库（cuBLAS / cuDNN / NCCL / TensorRT-LLM 等）；V100 等 sm70 卡型兼容性提示
 - **GPU 管理**：每卡概览 + 迷你趋势图；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关、功耗上限调整（sudo 密码流）；GPU 拓扑展示
 - **框架管理**：
-  - Docker 镜像：内置四框架镜像一键添加；「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验，自动拉取并持久保存，可随时移除）
-   - 原生框架检测：vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM 安装状态与版本，一键安装 / 升级 / 卸载（FastLLM 为 C++ 实现、无 PyTorch 依赖，仅原生模式）
+  - Docker 镜像：内置五框架镜像一键添加（含 FastLLM）；「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验，自动拉取并持久保存，可随时移除）
+    - 原生框架检测：vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM 安装状态与版本，一键安装 / 升级 / 卸载（FastLLM 为 C++ 实现、无 PyTorch 依赖；Docker 模式用内置镜像 docker.io/garenleeasa/ftllm）
    - 新建实例按框架分流：内置五框架保留完整参数 Tab 分页设置（悬停查看 CLI 旗标与官方默认值）；自定义框架为简化表单，启动命令由用户自行填写
   - 实例启停：原生进程（nohup + PID）或 Docker 容器（`--gpus all`、模型路径原样挂载）；启动命令实时预览
   - 运行日志：初始加载最后 500 行，滚动到顶自动加载更早 500 行（视口锚定不跳动），抽屉宽度为窗口 2/3
@@ -30,7 +30,7 @@
 <img src="screenshoot/ui-tour.gif" width="840" alt="界面总览（总览 → 环境检查 → GPU 管理 → 框架管理 → 模型管理 → 设置）"/>
 
 - **总览监控**：环境信息卡片（系统 / CPU / 多分区磁盘 / Python / CUDA / 驱动 / Docker）；GPU 利用率、显存、温度、功耗实时曲线与 GPU 进程列表；推理服务 `/metrics` 指标抓取 + 折线图（自动勾选关键指标，支持手动勾选与自动刷新；含 Token 生成速率（tokens/s）派生指标，由 `llamacpp:tokens_predicted_total` 与 `llamacpp:tokens_predicted_seconds_total` 两个累计计数器的相邻采样差值相除得到）。
-- **环境检查**：25 项体检（基础工具 / GPU 驱动 / Docker 与 GPU 运行时 / 模型工具 / 推理引擎 / CUDA 库），缺失项一键修复（pip / apt / Docker 安装授权 / uv 装 Python 3.12 / 跳转拉取镜像）；V100 等 sm70 卡型兼容性提示；驱动等手动项提供复制命令。
+- **环境检查**：26 项体检（基础工具 / GPU 驱动 / Docker 与 GPU 运行时 / 模型工具 / 推理引擎 / CUDA 库），缺失项一键修复（pip / apt / Docker 安装授权 / uv 装 Python 3.12 / 跳转拉取镜像）；V100 等 sm70 卡型兼容性提示；驱动等手动项提供复制命令。
 - **GPU 管理**：每卡概览（型号 / 序列号 / VBIOS / PCIe / ECC / 降频原因，兼容新旧驱动位掩码格式）；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关与功耗上限调整（sudo 密码流）；GPU 拓扑展示。
 - **框架管理**：Docker 镜像一键添加 / 拉取，「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验后自动拉取并持久保存）；vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM 原生框架检测；实例参数动态表单 + 启动命令实时预览；运行日志抽屉（初始 500 行，滚动到顶自动加载更早内容）。
 - **模型管理**：ModelScope / Hugging Face 搜索与服务器端流式下载；本地模型扫描使用官方 `gguf` / `safetensors` 包解析头部（架构 / 参数量 / 上下文 / 量化，分片组聚合），带持久化解析缓存——目录未变化时刷新秒级返回。
@@ -40,7 +40,7 @@
 
 1. **安装**：从 [Releases](https://github.com/chenyb999-zhcn/RemoteLLM/releases/latest) 下载 `RemoteLLM_*_x64-setup.exe` 安装
 2. **添加服务器**：填写主机、账号、认证方式（密码或私钥），连接
-3. **环境体检**：环境检查页查看 25 项结果，缺失项一键修复
+3. **环境体检**：环境检查页查看 26 项结果，缺失项一键修复
 4. **准备框架**：Docker 镜像页添加 / 拉取镜像（可添加自定义框架镜像），或原生框架一键安装
 5. **创建实例**：选框架、模型路径、参数（自定义框架直接填写启动命令）→ 启动
 6. **监控运维**：总览页看 GPU 曲线与 `/metrics` 指标；日志抽屉查看实例输出

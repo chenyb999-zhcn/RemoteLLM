@@ -69,6 +69,8 @@ export default {
     mirrorCard: "软件源镜像（服务器侧生效）",
     pipIndex: "pip 源",
     pipHint: "引擎/依赖 pip 安装走该镜像（vLLM/sglang/1Cat 等）",
+    uvPythonMirror: "uv Python 镜像",
+    uvPythonMirrorPh: "留空 = 默认 GitHub，如 https://mirror.example.com/pbs",
     debMirror: "deb 源",
     debHint: "apt 装工具链/Docker 前自动切换 /etc/apt/sources.list（幂等）",
     dashboard: "仪表盘",

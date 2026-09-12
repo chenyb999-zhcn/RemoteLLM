@@ -50,6 +50,9 @@ pub struct AppSettings {
     /// pip 镜像源 id（tuna/aliyun/ustc/huawei/tencent/pypi），默认 tuna
     #[serde(default = "default_pip_index")]
     pub pip_index: String,
+    /// uv python install 3.12 的下载镜像前缀（替换官方 GitHub 前缀，空 = 官方）
+    #[serde(default)]
+    pub uv_python_mirror: String,
     /// deb(apt) 镜像源 id（tuna/aliyun/ustc/huawei/tencent/official），默认 tuna
     #[serde(default = "default_deb_mirror")]
     pub deb_mirror: String,
@@ -101,23 +104,23 @@ pub fn deb_mirror_base(id: &str) -> String {
     }
 }
 
-/// 生成切换 apt 源的独立 shell 片段（幂等：已指向目标镜像则跳过），自带提权
+/// 生成切换 apt 源的独立 shell 片段（幂等：只剩目标镜像行则跳过），自带提权
 /// （root / 免密 sudo / 密码 sudo 三分支），放在 apt-get 命令之前执行。
+/// security 源必须与主源指向同一 base（5 个镜像均在 <base>/dists/<suite>-security/，
+/// 不存在 <base>/security 子路径）；第 3 条 sed 修复旧版本误改的 {base}/security 行。
 /// official/空/未知 → 返回空串（不改源）。pw 为登录密码（密码 sudo 分支用），可空。
 pub fn deb_mirror_prefix(id: &str, pw: Option<&str>) -> String {
     let base = deb_mirror_base(id);
     if base.starts_with("http://archive.ubuntu.com") {
         return String::new();
     }
-    let host = base
-        .split("://")
-        .nth(1)
-        .and_then(|s| s.split('/').next())
-        .unwrap_or("");
+    // 官方/区域主源（archive 前可有 cn./us. 等区域前缀，裸 archive 亦可）→ base；
+    // 官方 security → base；修复旧版本误写的 {base}/security 行
     let sed = format!(
-        "sed -i 's#http://archive.ubuntu.com/ubuntu#{base}#g; s#http://security.ubuntu.com/ubuntu#{base}/security#g' /etc/apt/sources.list"
+        "sed -i 's#http://\\([a-z]*\\.\\)\\?archive\\.ubuntu\\.com/ubuntu#{base}#g; s#http://security\\.ubuntu\\.com/ubuntu#{base}#g; s#{base}/security#{base}#g' /etc/apt/sources.list"
     );
-    // 提权三分支：root 直接 / 免密 sudo / 密码 sudo；都失败则告警不阻塞（apt 仍可用官方源兜底）
+    // 仅当残留官方行或坏行时才执行 sed（幂等）；提权三分支：root 直接 / 免密 sudo / 密码 sudo；
+    // 都失败则告警不阻塞（apt 沿用当前源）
     let pw_branch = match pw {
         Some(p) if !p.is_empty() => {
             let p = p.replace('\'', "'\\''");
@@ -126,12 +129,12 @@ pub fn deb_mirror_prefix(id: &str, pw: Option<&str>) -> String {
         _ => String::new(),
     };
     format!(
-        "if ! grep -q '{host}' /etc/apt/sources.list 2>/dev/null; then \
-         if [ \"$(id -u)\" = \"0\" ]; then {sed} || echo '[deb] 切换镜像源失败，沿用当前源'; \
-         elif sudo -n true 2>/dev/null; then sudo {sed} || echo '[deb] 切换镜像源失败，沿用当前源'; \
-         {pw_branch} \
-         fi; \
-         fi; "
+        "if grep -qE 'archive\\.ubuntu\\.com|security\\.ubuntu\\.com|{base}/security' /etc/apt/sources.list 2>/dev/null; then \
+          if [ \"$(id -u)\" = \"0\" ]; then {sed} || echo '[deb] 切换镜像源失败，沿用当前源'; \
+          elif sudo -n true 2>/dev/null; then sudo {sed} || echo '[deb] 切换镜像源失败，沿用当前源'; \
+          {pw_branch} \
+          fi; \
+          fi; "
     )
 }
 
@@ -158,6 +161,7 @@ impl Default for AppSettings {
             proxy_enabled: false,
             proxy_url: String::new(),
             pip_index: default_pip_index(),
+            uv_python_mirror: String::new(),
             deb_mirror: default_deb_mirror(),
             custom_frameworks: Vec::new(),
         }
@@ -168,6 +172,17 @@ impl Default for AppSettings {
 pub fn effective_proxy(s: &AppSettings) -> Option<&str> {
     let u = s.proxy_url.trim();
     (s.proxy_enabled && !u.is_empty()).then_some(u)
+}
+
+/// uv python install 3.12 的镜像前缀（UV_PYTHON_INSTALL_MIRROR，空 = 默认 GitHub）
+pub fn uv_python_mirror_prefix(s: &AppSettings) -> String {
+    let u = s.uv_python_mirror.trim();
+    if u.is_empty() {
+        String::new()
+    } else {
+        let q = u.replace('\'', "'\\''");
+        format!("export UV_PYTHON_INSTALL_MIRROR='{q}'\n")
+    }
 }
 
 /// 服务器侧命令的代理导出前缀：http_proxy/https_proxy 大小写全套 + no_proxy
@@ -269,6 +284,32 @@ mod tests {
     }
 
     #[test]
+    fn uv_mirror_prefix_empty_by_default() {
+        let s = AppSettings::default();
+        assert_eq!(uv_python_mirror_prefix(&s), "");
+        let mut s = AppSettings::default();
+        s.uv_python_mirror = "   ".into();
+        assert_eq!(uv_python_mirror_prefix(&s), "");
+    }
+
+    #[test]
+    fn uv_mirror_prefix_exports_value() {
+        let mut s = AppSettings::default();
+        s.uv_python_mirror = "https://m.example/pbs".into();
+        assert_eq!(
+            uv_python_mirror_prefix(&s),
+            "export UV_PYTHON_INSTALL_MIRROR='https://m.example/pbs'\n"
+        );
+    }
+
+    #[test]
+    fn uv_mirror_prefix_escapes_quote() {
+        let mut s = AppSettings::default();
+        s.uv_python_mirror = "http://a'b/pbs".into();
+        assert!(uv_python_mirror_prefix(&s).contains(r#"'http://a'\''b/pbs'"#));
+    }
+
+    #[test]
     fn pip_index_arg_resolves_known_and_fallback() {
         assert!(pip_index_arg("tuna").contains("pypi.tuna.tsinghua.edu.cn"));
         assert!(pip_index_arg("aliyun").contains("mirrors.aliyun.com/pypi"));
@@ -306,9 +347,17 @@ mod tests {
         let s = deb_mirror_prefix("tuna", None);
         assert!(s.contains("mirrors.tuna.tsinghua.edu.cn/ubuntu"));
         assert!(s.contains("sed -i"));
-        assert!(s.contains("archive.ubuntu.com"));
-        // 幂等守卫
-        assert!(s.contains("grep -q 'mirrors.tuna.tsinghua.edu.cn'"));
+        assert!(s.contains("archive\\.ubuntu\\.com"));
+        // security 源指向与主源同一 base（不得拼 /security，镜像上不存在该子路径会 404）
+        assert!(!s.contains("ubuntu/security#g"));
+        // 修复旧版本误写的 {base}/security 行
+        assert!(s.contains(
+            "s#https://mirrors.tuna.tsinghua.edu.cn/ubuntu/security#https://mirrors.tuna.tsinghua.edu.cn/ubuntu#g"
+        ));
+        // 幂等守卫：仅当残留官方行或坏行时才执行
+        assert!(s.contains(
+            "grep -qE 'archive\\.ubuntu\\.com|security\\.ubuntu\\.com|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/security'"
+        ));
     }
 
     #[test]

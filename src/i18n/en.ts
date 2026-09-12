@@ -70,6 +70,8 @@ export default {
     mirrorCard: "Package Mirrors (applies on the server)",
     pipIndex: "pip index",
     pipHint: "pip installs of engines/dependencies use this mirror (vLLM/sglang/1Cat, etc.)",
+    uvPythonMirror: "uv Python mirror",
+    uvPythonMirrorPh: "Empty = default GitHub, e.g. https://mirror.example.com/pbs",
     debMirror: "deb mirror",
     debHint:
       "Automatically switches /etc/apt/sources.list before installing toolchains/Docker via apt (idempotent)",

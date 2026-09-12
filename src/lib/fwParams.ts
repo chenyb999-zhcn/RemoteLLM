@@ -108,9 +108,8 @@ export const FW_META: Record<string, FwMeta> = {
     desc: "高性能推理引擎（C++ 无 PyTorch 依赖，稠密/MoE 混合推理，ftllm server）",
     descEn: "High-performance inference engine (torch-free C++, dense/MoE hybrid, ftllm server)",
     defaultPort: 8080,
-    dockerImage: "",
-    // FastLLM 暂无官方 Docker 镜像（仓库 Dockerfile 为源码构建的老版 webui），仅支持原生 pip 安装
-    nativeOnly: true,
+    // 上游镜像（entrypoint 即 ftllm 本体，纯参数）；原生 pip 安装与 Docker 模式均可用
+    dockerImage: "docker.io/garenleeasa/ftllm:v0.1.8.1",
     params: fastllmParams,
     tabs: fastllmTabs,
   },

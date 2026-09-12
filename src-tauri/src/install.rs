@@ -42,10 +42,11 @@ fn pip_install(pkg: &str, prefix: &str, idx: &str) -> String {
 /// pip 框架（vLLM/sglang/FastLLM）公共前导：确保 uv 已装（用户态）→ 确保 Python 3.12
 /// 可用 → venv 不存在则创建。幂等可重跑。框架统一装进 {fw_dir}/{venv} 与系统 Python
 /// （可能 3.14，torch 生态不支持）隔离，pip 预编译 wheel 安装、不源码编译。
-fn uv_venv_setup(fw_dir: &str, venv: &str) -> String {
+fn uv_venv_setup(fw_dir: &str, venv: &str, mirror: &str) -> String {
     format!(
         "export PATH=\"$HOME/.local/bin:$PATH\"\n\
-         # 统一装进 3.12 venv（系统 python3 可能是 3.14，torch/torch.compile 不支持 3.14，\n\
+          {mirror}\
+          # 统一装进 3.12 venv（系统 python3 可能是 3.14，torch/torch.compile 不支持 3.14，\n\
          # sglang import 即崩；1Cat 预编译 wheel 仅 cp312），与系统 Python 隔离。\n\
          # 用 uv 确保 3.12 可用并建 venv（uv 装用户目录，无需 sudo）。\n\
          if ! command -v uv >/dev/null 2>&1; then\n\
@@ -85,6 +86,8 @@ pub fn build_install_script(
     let onecat_repo_q = onecat_repo.replace('\'', "'\\''");
     let proxy = crate::settings::proxy_env_prefix(settings);
     let idx = crate::settings::pip_index_arg(&settings.pip_index);
+    // uv python install 3.12 的镜像导出前缀（UV_PYTHON_INSTALL_MIRROR，空 = 官方 GitHub）
+    let mirror = crate::settings::uv_python_mirror_prefix(settings);
     // apt 镜像源切换前缀（仅 apt 系脚本需要；自带提权，幂等）
     let deb = crate::settings::deb_mirror_prefix(&settings.deb_mirror, sudo_pass);
     // llama.cpp 工具链缺失时的密码 sudo 分支：root / 免密 sudo 之外的第三条路
@@ -110,6 +113,7 @@ pub fn build_install_script(
         "huggingface" => pip_install("huggingface_hub[cli]", &proxy, &idx),
         "python312" => format!(
             "{proxy}export PATH=\"$HOME/.local/bin:$PATH\"\n\
+              {mirror}\
               # 检查并安装 Python 3.12（vLLM/sglang/FastLLM/1Cat venv 的底座）。\n\
               # uv 装进用户目录（~/.local/share/uv），不碰系统 Python。\n\
               if ! command -v uv >/dev/null 2>&1; then\n\
@@ -125,18 +129,19 @@ pub fn build_install_script(
               {setup}\
               {fw_dir}/vllm-venv/bin/python -m pip install -U {idx} 'vllm' 2>&1 \
               || {fw_dir}/vllm-venv/bin/python -m pip install -U {idx} 'vllm' --break-system-packages 2>&1",
-            setup = uv_venv_setup(&fw_dir, "vllm-venv"),
+            setup = uv_venv_setup(&fw_dir, "vllm-venv", &mirror),
         ),
         "sglang" => format!(
             "{proxy}mkdir -p {fw_dir}\n\
               {setup}\
               {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' 2>&1 \
               || {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
-            setup = uv_venv_setup(&fw_dir, "sglang-venv"),
+            setup = uv_venv_setup(&fw_dir, "sglang-venv", &mirror),
         ),
         "1cat-vllm" => format!(
             "{proxy}mkdir -p {fw_dir}\n\
               export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
+              {mirror}\
               # 1Cat-vLLM 未发布到 PyPI，只能源码安装；预编译 wheel 仅 cp312、源码 flash-attn\n\
               # 拒绝 3.13/3.14，统一装进 3.12 venv（启动/检测均回退 1cat-venv）。用 uv 确保 3.12 可用并建 venv。\n\
               if ! command -v uv >/dev/null 2>&1; then\n\
@@ -156,7 +161,7 @@ pub fn build_install_script(
               {setup}\
               {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' 2>&1 \
               || {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' --break-system-packages 2>&1",
-            setup = uv_venv_setup(&fw_dir, "ftllm-venv"),
+            setup = uv_venv_setup(&fw_dir, "ftllm-venv", &mirror),
         ),
         "llama-cpp" => format!(
             "{proxy}{deb}mkdir -p {fw_dir}\ncd {fw_dir}\n\
@@ -442,6 +447,30 @@ mod tests {
         assert!(s.contains("PY312_DONE"), "python312 缺完成标记: {s}");
         assert!(!s.contains("apt-get"), "python312 不应走 apt: {s}");
         assert!(!s.contains("sudo"), "python312 不应需要 sudo: {s}");
+    }
+
+    #[test]
+    fn uv_python_mirror_export_in_scripts() {
+        // 配置 uv Python 镜像后，所有走 uv python install 3.12 的脚本都须导出
+        // UV_PYTHON_INSTALL_MIRROR，且导出必须在安装命令之前
+        let mut d = crate::settings::AppSettings::default();
+        d.uv_python_mirror = "https://m.example/pbs".into();
+        for tool in ["python312", "vllm", "sglang", "fastllm", "1cat-vllm"] {
+            let s = build_install_script(&profile(), &d, tool, None).unwrap();
+            assert!(
+                s.contains("export UV_PYTHON_INSTALL_MIRROR='https://m.example/pbs'"),
+                "tool={tool} 未导出 uv 镜像: {s}"
+            );
+            let m = s.find("export UV_PYTHON_INSTALL_MIRROR=").unwrap();
+            let inst = s.find("uv python install 3.12").unwrap();
+            assert!(m < inst, "tool={tool} 镜像导出应在 uv python install 之前");
+        }
+        // 未配置时不导出（走官方 GitHub）
+        let d2 = crate::settings::AppSettings::default();
+        for tool in ["python312", "vllm", "sglang", "fastllm", "1cat-vllm"] {
+            let s = build_install_script(&profile(), &d2, tool, None).unwrap();
+            assert!(!s.contains("UV_PYTHON_INSTALL_MIRROR"), "tool={tool} 未配置却导出镜像");
+        }
     }
 
     #[test]
