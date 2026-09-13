@@ -33,6 +33,10 @@ pub struct ServerProfile {
     /// 1Cat-vLLM Docker 镜像
     #[serde(default)]
     pub onecat_image: Option<String>,
+    /// 档案级代理覆盖：None = 跟随全局设置；Some("") = 强制不走代理；Some(url) = 用指定代理
+    /// （不同服务器网络环境不同：如内网机需代理、WSL 直连外网反而不能走内网代理）
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 fn default_port() -> u16 {
@@ -71,6 +75,32 @@ impl ServerProfile {
     }
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+}
+
+/// 档案级生效代理：profile.proxy 覆盖 > 全局设置（proxy_enabled + proxy_url）
+/// None = 不走代理
+pub fn effective_proxy(profile: &ServerProfile, settings: &crate::settings::AppSettings) -> Option<String> {
+    match &profile.proxy {
+        Some(p) => {
+            let t = p.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        }
+        None => crate::settings::effective_proxy(settings).map(str::to_string),
+    }
+}
+
+/// 服务器侧命令的代理导出前缀（档案级：profile.proxy 覆盖 > 全局）；无代理时返回空串
+pub fn proxy_env_prefix(profile: &ServerProfile, settings: &crate::settings::AppSettings) -> String {
+    match effective_proxy(profile, settings) {
+        Some(u) => {
+            let u = u.replace('\'', "'\\''");
+            format!(
+                "export http_proxy='{u}' https_proxy='{u}' HTTP_PROXY='{u}' HTTPS_PROXY='{u}' \
+                 no_proxy='localhost,127.0.0.1' NO_PROXY='localhost,127.0.0.1'; "
+            )
+        }
+        None => String::new(),
     }
 }
 
@@ -164,4 +194,108 @@ pub async fn delete_profile(
     save_store(&app, &profiles)?;
     let _ = state.conns.lock().await.remove(&id);
     Ok(profiles)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::AppSettings;
+
+    fn prof(proxy: Option<String>) -> ServerProfile {
+        ServerProfile {
+            id: "p1".into(),
+            name: "t".into(),
+            host: "127.0.0.1".into(),
+            port: 22,
+            user: "u".into(),
+            auth: AuthMethod::Password {
+                password: "p".into(),
+            },
+            base_dir: "~/RemoteLLM".into(),
+            models_dir: None,
+            onecat_repo: None,
+            onecat_image: None,
+            proxy,
+        }
+    }
+
+    fn global(on: bool, url: &str) -> AppSettings {
+        let mut s = AppSettings::default();
+        s.proxy_enabled = on;
+        s.proxy_url = url.into();
+        s
+    }
+
+    #[test]
+    fn profile_proxy_none_inherits_global() {
+        assert_eq!(
+            effective_proxy(&prof(None), &global(true, "http://g:7890")),
+            Some("http://g:7890".into())
+        );
+        assert_eq!(effective_proxy(&prof(None), &global(false, "http://g:7890")), None);
+    }
+
+    #[test]
+    fn profile_proxy_empty_forces_off() {
+        // 档案显式空串 = 强制不走代理，即使全局启用（wsl2 场景：全局代理在内网，WSL 不可达）
+        assert_eq!(
+            effective_proxy(&prof(Some(String::new())), &global(true, "http://g:7890")),
+            None
+        );
+        assert_eq!(
+            effective_proxy(&prof(Some("   ".into())), &global(true, "http://g:7890")),
+            None
+        );
+    }
+
+    #[test]
+    fn profile_proxy_custom_wins() {
+        assert_eq!(
+            effective_proxy(&prof(Some("http://c:1080".into())), &global(true, "http://g:7890")),
+            Some("http://c:1080".into())
+        );
+        // 全局未启用时档案自定义仍生效
+        assert_eq!(
+            effective_proxy(&prof(Some("http://c:1080".into())), &global(false, "")),
+            Some("http://c:1080".into())
+        );
+    }
+
+    #[test]
+    fn profile_proxy_env_prefix() {
+        // 全局启用 + 档案未覆盖 → 导出全套代理变量
+        let s = proxy_env_prefix(&prof(None), &global(true, "http://192.168.31.10:7890"));
+        for v in [
+            "http_proxy='http://192.168.31.10:7890'",
+            "https_proxy='http://192.168.31.10:7890'",
+            "HTTP_PROXY='http://192.168.31.10:7890'",
+            "HTTPS_PROXY='http://192.168.31.10:7890'",
+            "no_proxy='localhost,127.0.0.1'",
+            "NO_PROXY='localhost,127.0.0.1'",
+        ] {
+            assert!(s.contains(v), "missing {v} in {s}");
+        }
+        assert!(s.ends_with("; "));
+        // 单引号转义
+        let s2 = proxy_env_prefix(&prof(None), &global(true, "http://a'b:1"));
+        assert!(s2.contains(r#"'http://a'\''b:1'"#));
+        // 档案强制关 / 全局未启用 → 空前缀
+        assert!(proxy_env_prefix(&prof(Some(String::new())), &global(true, "http://g:7890")).is_empty());
+        assert!(proxy_env_prefix(&prof(None), &global(false, "")).is_empty());
+        // 档案自定义生效
+        let s3 = proxy_env_prefix(&prof(Some("http://c:1080".into())), &global(false, ""));
+        assert!(s3.contains("http_proxy='http://c:1080'"));
+    }
+
+    #[test]
+    fn profile_proxy_field_optional_in_json() {
+        // 旧档案 JSON 无 proxy 字段 → 反序列化为 None（向后兼容）
+        let json = r#"{"id":"a","name":"n","host":"h","port":22,"user":"u","auth":{"type":"password","password":"p"}}"#;
+        let p: ServerProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(p.proxy, None);
+        let mut p2 = p.clone();
+        p2.proxy = Some("http://x:1".into());
+        let v = serde_json::to_value(&p2).unwrap();
+        assert_eq!(v["proxy"], "http://x:1");
+    }
 }

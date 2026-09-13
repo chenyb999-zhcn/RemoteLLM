@@ -17,7 +17,7 @@
 - **GPU 管理**：每卡概览 + 迷你趋势图；GPU 进程管理（显示属主，仅可结束自己的进程）；Persistence Mode 开关、功耗上限调整（sudo 密码流）；GPU 拓扑展示
 - **框架管理**：
   - Docker 镜像：内置五框架镜像一键添加（含 FastLLM）；「添加框架镜像」支持任意仓库镜像（框架名 + 镜像地址，地址合法性校验，自动拉取并持久保存，可随时移除）
-    - 原生框架检测：vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM 安装状态与版本，一键安装 / 升级 / 卸载（FastLLM 为 C++ 实现、无 PyTorch 依赖；Docker 模式用内置镜像 docker.io/garenleeasa/ftllm）
+    - 原生框架检测：vLLM / 1Cat-vLLM / SGLang / llama.cpp / FastLLM 安装状态与版本，一键安装 / 升级 / 卸载（FastLLM 为 C++ 实现、无 PyTorch 依赖；Docker 模式用内置镜像 swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm，与 docker.io 同源）
    - 新建实例按框架分流：内置五框架保留完整参数 Tab 分页设置（悬停查看 CLI 旗标与官方默认值）；自定义框架为简化表单，启动命令由用户自行填写
   - 实例启停：原生进程（nohup + PID）或 Docker 容器（`--gpus all`、模型路径原样挂载）；启动命令实时预览
   - 运行日志：初始加载最后 500 行，滚动到顶自动加载更早 500 行（视口锚定不跳动），抽屉宽度为窗口 2/3

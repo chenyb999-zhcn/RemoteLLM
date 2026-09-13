@@ -39,8 +39,11 @@ pub struct LocalModel {
     pub note: Option<String>,
 }
 
-fn shq(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// 双引号路径：保留 `$HOME` 展开（shell_path 把 `~` 归一为 `$HOME` 并依赖 shell 展开，
+/// 单引号会抑制展开，导致默认 baseDir 下的路径删除/判断全部落空），
+/// 同时防空格与通配符；转义 `\` 与 `"` 防引号逃逸。
+fn dq(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// 分片文件名前缀：model-00001-of-00003.gguf -> model
@@ -1062,7 +1065,7 @@ pub async fn check_parser_libs(
     })
 }
 
-/// files 为要下载的文件模式（空 = 整个仓库）；proxy 为代理导出前缀（空 = 未启用）
+/// files 为要下载的文件（空 = 整个仓库）；proxy 为代理导出前缀（空 = 未启用）
 pub fn download_command(
     source: &str,
     model_id: &str,
@@ -1072,13 +1075,42 @@ pub fn download_command(
     files: &[String],
     proxy: &str,
 ) -> Result<String, AppError> {
-    let dest_q = format!("'{}'", dest.replace('\'', "'\\''"));
+    // dest 以 ~ 开头时 modelscope 不做 expanduser（已知 quirk：.incomplete 临时文件按
+    // 字面相对路径打开 → 全部下载失败但仍 exit 0）→ 统一替换为 $HOME 由 shell 展开；
+    // 双引号包裹并转义内部 \ " ` $
+    let esc = dest
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$");
+    let dest_raw = if dest.starts_with('~') {
+        format!("$HOME{}", &esc[1..])
+    } else {
+        esc
+    };
+    let dest_q = format!("\"{dest_raw}\"");
     let id_q = model_id.replace('\'', "'\\''");
     let pats: Vec<String> = files
         .iter()
         .map(|f| f.trim().to_string())
         .filter(|f| !f.is_empty())
         .collect();
+    // modelscope 全部文件下载失败也返回 exit 0 → 下载后校验：指定文件逐个检查存在；
+    // 整仓下载（无文件列表）则要求目录非空
+    let verify = if pats.is_empty() {
+        format!(
+            " && {{ [ -n \"$(ls -A \"{dest_raw}\" 2>/dev/null)\" ] || {{ echo \"ERROR: 下载目录为空（下载失败）: {dest_raw}\"; exit 1; }}; }}"
+        )
+    } else {
+        let list: Vec<String> = pats
+            .iter()
+            .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+            .collect();
+        format!(
+            " && for __p in {}; do ls \"{dest_raw}\"/\"$__p\" >/dev/null 2>&1 || {{ echo \"ERROR: 下载校验失败（文件缺失）: $__p\"; exit 1; }}; done",
+            list.join(" ")
+        )
+    };
     match source {
         "modelscope" => {
             let mut c = format!("modelscope download --model '{id_q}'");
@@ -1087,7 +1119,7 @@ pub fn download_command(
             }
             // 非 root 安装的 CLI 在 ~/.local/bin，非交互 PATH 可能没有它
             Ok(format!(
-                "export PATH=\"$PATH:$HOME/.local/bin\"; {proxy}{c} --local_dir {dest_q} 2>&1"
+                "export PATH=\"$PATH:$HOME/.local/bin\"; {proxy}{c} --local_dir {dest_q} 2>&1{verify}"
             ))
         }
         "huggingface" => {
@@ -1104,7 +1136,7 @@ pub fn download_command(
                 env.push_str(&format!("HF_ENDPOINT='{}' ", e.replace('\'', "'\\''")));
             }
             Ok(format!(
-                "export PATH=\"$PATH:$HOME/.local/bin\"; {proxy}{env}{c} 2>&1"
+                "export PATH=\"$PATH:$HOME/.local/bin\"; {proxy}{env}{c} 2>&1{verify}"
             ))
         }
         other => Err(AppError::Other(format!("未知来源: {other}"))),
@@ -1158,7 +1190,7 @@ pub async fn model_download_start(
         token.as_deref(),
         Some(settings.hf_endpoint.as_str()),
         files.as_deref().unwrap_or(&[]),
-        &crate::settings::proxy_env_prefix(&settings),
+        &crate::profile::proxy_env_prefix(&profile, &settings),
     )?;
     if !state.conns.lock().await.contains_key(&profile_id) {
         return Err(AppError::NotConnected(profile_id));
@@ -1171,6 +1203,31 @@ pub async fn model_download_start(
     );
     crate::ssh::SshSession::spawn_stream(app, profile_id, cmd, task_id.clone());
     Ok(task_id)
+}
+
+/// 构造远端删除命令（纯函数，便于测试）。
+/// 路径必须用 dq（双引号）：shell_path 把 `~` 归一为 `$HOME` 并依赖 shell 展开，
+/// 单引号会抑制展开，使默认 baseDir（~/RemoteLLM）下的删除全部落空为 NOT_FOUND。
+fn delete_command(base: &str, rel: &str) -> String {
+    let target = format!("{}/{}", base, rel);
+    match rel.rsplit_once('/') {
+        Some((dir_part, fname))
+            if is_safe_name(dir_part) && split_prefix(fname).is_some() =>
+        {
+            let prefix = split_prefix(fname).unwrap();
+            let ddir = format!("{}/{}", base, dir_part);
+            format!(
+                "if ls {d}/{p}*-of-*.gguf >/dev/null 2>&1; then rm -f {d}/{p}*-of-*.gguf && echo DELETED; else echo NOT_FOUND; fi",
+                d = dq(&ddir),
+                p = dq(&prefix)
+            )
+        }
+        _ => format!(
+            "if [ -e {} ]; then rm -rf {} && echo DELETED; else echo NOT_FOUND; fi",
+            dq(&target),
+            dq(&target)
+        ),
+    }
 }
 
 /// name 为相对模型目录的路径（可含子目录）；分片组首片会整组删除
@@ -1191,25 +1248,7 @@ pub async fn model_delete(
     let profile = get_profile(&app, &profile_id)?;
     let settings = crate::settings::load_settings(&app)?;
     let base = crate::profile::effective_models_dir(&profile, &settings);
-    let target = format!("{}/{}", base, rel);
-    let cmd = match rel.rsplit_once('/') {
-        Some((dir_part, fname))
-            if is_safe_name(dir_part) && split_prefix(fname).is_some() =>
-        {
-            let prefix = split_prefix(fname).unwrap();
-            let ddir = format!("{}/{}", base, dir_part);
-            format!(
-                "if ls {d}/{p}*-of-*.gguf >/dev/null 2>&1; then rm -f {d}/{p}*-of-*.gguf && echo DELETED; else echo NOT_FOUND; fi",
-                d = shq(&ddir),
-                p = shq(&prefix)
-            )
-        }
-        _ => format!(
-            "if [ -e {} ]; then rm -rf {} && echo DELETED; else echo NOT_FOUND; fi",
-            shq(&target),
-            shq(&target)
-        ),
-    };
+    let cmd = delete_command(&base, &rel);
     crate::applog::info("task", &format!("model_delete profile={profile_id} rel={rel}"));
     let out = run_on(&state, &profile_id, &cmd).await?;
     Ok(out.stdout.trim().to_string())
@@ -1234,5 +1273,80 @@ mod tests {
         assert_eq!(split_prefix("-of-1.gguf"), None);
         assert_eq!(split_prefix("x-1-of-2.bin"), None);
         assert_eq!(split_prefix("bad'name-1-of-2.gguf"), None);
+    }
+
+    #[test]
+    fn download_command_expands_tilde_and_verifies() {
+        let c = download_command(
+            "modelscope",
+            "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            "~/RemoteLLM/models/Qwen2.5-0.5B-Instruct-GGUF",
+            None,
+            None,
+            &["qwen2.5-0.5b-instruct-q2_k.gguf".to_string()],
+            "",
+        )
+        .unwrap();
+        // 前导 ~ 替换为 $HOME（shell 展开），双引号包裹
+        assert!(
+            c.contains(r#"--local_dir "$HOME/RemoteLLM/models/Qwen2.5-0.5B-Instruct-GGUF""#),
+            "{c}"
+        );
+        // 不再出现字面 '~/ 单引号路径（modelscope 不展开）
+        assert!(!c.contains("'~/"), "{c}");
+        // 下载后逐文件校验
+        assert!(c.contains("下载校验失败"), "{c}");
+        assert!(c.contains("qwen2.5-0.5b-instruct-q2_k.gguf"), "{c}");
+
+        // 整仓下载（空文件列表）→ 目录非空校验
+        let w = download_command("modelscope", "m/x", "~/m", None, None, &[], "").unwrap();
+        assert!(w.contains(r#"ls -A "$HOME/m""#), "{w}");
+        assert!(w.contains("下载目录为空"), "{w}");
+
+        // 绝对路径 dest 原样保留（双引号包裹）
+        let a = download_command(
+            "huggingface",
+            "org/model",
+            "/data/models/model",
+            None,
+            None,
+            &["a.gguf".to_string()],
+            "",
+        )
+        .unwrap();
+        assert!(a.contains(r#"--local-dir "/data/models/model""#), "{a}");
+        assert!(a.contains("下载校验失败"), "{a}");
+
+        // 特殊字符转义：dest 含 $ 与空格
+        let s = download_command("modelscope", "m", "~/my $dir", None, None, &[], "").unwrap();
+        assert!(s.contains(r#"$HOME/my \$dir"#), "{s}");
+    }
+
+    #[test]
+    fn delete_command_preserves_home_expansion() {
+        // 回归：单引号（shq）会抑制 $HOME 展开，默认 baseDir 下删除全部 NOT_FOUND、文件仍在
+        let c = delete_command(
+            "$HOME/RemoteLLM/models",
+            "Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q2_k.gguf",
+        );
+        assert!(
+            c.contains(r#"[ -e "$HOME/RemoteLLM/models/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q2_k.gguf" ]"#),
+            "{c}"
+        );
+        assert!(
+            c.contains(r#"rm -rf "$HOME/RemoteLLM/models/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q2_k.gguf""#),
+            "{c}"
+        );
+        assert!(!c.contains("'$HOME"), "{c}");
+
+        // 分片组：通配符在引号外展开，$HOME 同样保留展开
+        let s = delete_command("$HOME/m", "grp/model-00001-of-00003.gguf");
+        assert!(s.contains(r#"ls "$HOME/m/grp"/"model"*-of-*.gguf"#), "{s}");
+        assert!(s.contains(r#"rm -f "$HOME/m/grp"/"model"*-of-*.gguf"#), "{s}");
+        assert!(!s.contains("'$HOME"), "{s}");
+
+        // 绝对路径（无 $）原样双引号
+        let a = delete_command("/data/models", "x/y.gguf");
+        assert!(a.contains(r#"[ -e "/data/models/x/y.gguf" ]"#), "{a}");
     }
 }

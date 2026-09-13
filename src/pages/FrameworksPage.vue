@@ -43,6 +43,7 @@ import { useServerStore } from "../stores/server";
 import { useInstanceStore } from "../stores/instance";
 import { useSettingsStore } from "../stores/settings";
 import { api, onTaskStream } from "../lib/api";
+import { effectiveProxy } from "../lib/proxy";
 import { i18n } from "../i18n";
 import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
@@ -665,7 +666,7 @@ const builtinImages = computed(() => {
     { label: "vLLM", image: "vllm/vllm-openai:latest", isDefault: false },
     { label: "SGLang", image: "lmsysorg/sglang:latest-cu129", isDefault: false },
     { label: "llama.cpp", image: "ghcr.io/ggml-org/llama.cpp:server-cuda", isDefault: false },
-    { label: "FastLLM", image: "docker.io/garenleeasa/ftllm:v0.1.8.1", isDefault: true },
+    { label: "FastLLM", image: "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm:v0.1.8.1", isDefault: true },
     ...settings.value.customFrameworks.map((c) => ({
       label: c.label,
       image: c.image,
@@ -815,31 +816,29 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
 async function doPull(image: string) {
   const pid = current.value?.id;
   if (!pid || !image.trim() || pulling.value) return;
-  // daemon 代理守卫：全局代理启用且 daemon 代理不一致 → 先配置 daemon 再继续拉取
-  if (settings.value.proxyEnabled) {
-    const want = settings.value.proxyUrl.trim();
-    if (want) {
-      let st = dockerStatus.value;
-      try {
-        st = await api.checkDocker(pid);
-        dockerStatus.value = st;
-      } catch {
-        /* 沿用已有状态 */
-      }
-      const cur = st?.daemonProxy ?? null;
-      if (st && cur !== want) {
-        dialog.warning({
-          title: t("docker.proxyTitle"),
-          content: t("fw.proxyDialogContent", { cur: cur ?? t("fw.notConfigured"), want }),
-          positiveText: t("fw.configureAndPull"),
-          negativeText: t("common.cancel"),
-          onPositiveClick: () => {
-            pendingPull.value = image.trim();
-            dockerInstallerRef.value?.askProxy(pid, st, want);
-          },
-        });
-        return;
-      }
+  // daemon 代理守卫：档案级生效代理非空且 daemon 代理不一致 → 先配置 daemon 再继续拉取
+  const want = effectiveProxy(current.value, settings.value);
+  if (want) {
+    let st = dockerStatus.value;
+    try {
+      st = await api.checkDocker(pid);
+      dockerStatus.value = st;
+    } catch {
+      /* 沿用已有状态 */
+    }
+    const cur = st?.daemonProxy ?? null;
+    if (st && cur !== want) {
+      dialog.warning({
+        title: t("docker.proxyTitle"),
+        content: t("fw.proxyDialogContent", { cur: cur ?? t("fw.notConfigured"), want }),
+        positiveText: t("fw.configureAndPull"),
+        negativeText: t("common.cancel"),
+        onPositiveClick: () => {
+          pendingPull.value = image.trim();
+          dockerInstallerRef.value?.askProxy(pid, st, want);
+        },
+      });
+      return;
     }
   }
   await startPull(pid, image.trim());
@@ -901,15 +900,11 @@ async function onDockerSuccess() {
   const img = pendingPull.value;
   pendingPull.value = null;
   if (!p) return;
-  try {
-    await serverStore.disconnect();
-    await serverStore.connect(p);
-  } catch (e: any) {
-    message.error(t("fw.reconnectFailed", { msg: e?.message ?? JSON.stringify(e) }));
-  }
+  // 代理配置流程不做整体断连重连：daemon 重启不影响既有 SSH 会话，
+  // 而断连会使本页卸载，丢失代理日志/拉取弹框（任务本身仍在后台执行）
   // daemon 代理配置成功 → 刷新状态并继续挂起的拉取
+  void loadDocker();
   if (img) {
-    void loadDocker();
     await startPull(p.id, img);
   }
 }

@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 
 use crate::docker::{parse_mode, probe_sudo_mode, wrap_line, SudoMode};
 use crate::error::AppError;
-use crate::settings::AppSettings;
+
 
 /// 单个检查项
 #[derive(Debug, Clone, Serialize)]
@@ -35,14 +35,16 @@ pub struct InitCheckResult {
 }
 
 /// apt 自动安装白名单（环境检查页只允许装这些）
-pub const APT_WHITELIST: &[&str] = &["curl", "git", "build-essential", "cmake", "ca-certificates"];
+pub const APT_WHITELIST: &[&str] =
+    &["curl", "git", "build-essential", "cmake", "ca-certificates", "nvidia-cuda-toolkit"];
 
 /// CUDA 库检查清单：key -> (中文标签, 作用说明, 缺失时状态)
-/// 缺失状态：核心推理库（cuBLAS/cuDNN/NCCL）缺为 warn，其余专用库缺为 info（docker 镜像均自带）
+/// 缺失状态：cuBLAS 缺为 warn（apt 一键可补），其余缺为 info（docker 镜像均自带；
+/// cuDNN/NCCL 的 apt 包名随 Ubuntu 版本变化，不在白名单内，不给一键按钮）
 const CUDA_LIBS: &[(&str, &str, &str, &str)] = &[
     ("cublas", "cuBLAS", "GPU 矩阵运算（GEMM/GEMV）；NCCL 传数据、cuBLAS 算数据", "warn"),
-    ("cudnn", "cuDNN", "深度学习原语加速（Conv/Attention/Norm）；vLLM/PyTorch 推理训练必装", "warn"),
-    ("nccl", "NCCL", "多 GPU/多节点集合通信（AllReduce、Broadcast 等）", "warn"),
+    ("cudnn", "cuDNN", "深度学习原语加速（Conv/Attention/Norm）；vLLM/PyTorch 推理训练必装", "info"),
+    ("nccl", "NCCL", "多 GPU/多节点集合通信（AllReduce、Broadcast 等）", "info"),
     ("cufft", "cuFFT", "GPU 快速傅里叶变换（信号处理/频域计算专用）", "info"),
     ("cusolver", "cuSOLVER", "稠密/稀疏线性求解器（LU/QR/Cholesky/SVD）；科学计算/优化", "info"),
     ("cusparse", "cuSPARSE", "稀疏矩阵运算（SpMV/SpMM，CSR/CSC）；GNN/推荐/MoE 关键依赖", "info"),
@@ -53,6 +55,10 @@ const CUDA_LIBS: &[(&str, &str, &str, &str)] = &[
     ("cutlass", "CUTLASS", "高性能 GEMM/Attention 模板库（源码级）；FlashAttention/vLLM 自定义 kernel 基础", "info"),
     ("trtllm", "TensorRT-LLM", "LLM 推理优化引擎（量化/KV Cache/调度）；vLLM 的竞品/互补方案", "info"),
 ];
+
+/// 可由 `apt install nvidia-cuda-toolkit` 覆盖的 CUDA 库（dpkg 前缀匹配命中），缺失时给一键 apt 按钮
+const CUDA_LIBS_APT: &[&str] =
+    &["cublas", "cufft", "cusolver", "cusparse", "curand", "npp", "nvjpeg", "nvcomp"];
 
 /// 一次 SSH 拿全部初始化信号（分节输出，section 解析与 docker.rs/envcheck.rs 相同约定）
 fn init_script(base_dir: &str) -> String {
@@ -69,6 +75,10 @@ grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"'
 uname -sr
 echo "==GPU=="
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo GPU_NONE
+# 是否有 NVIDIA GPU：PCI 0x10de（裸机/直通，纯 sysfs 无 lspci 依赖）或 /dev/nvidia*（WSL paravirtual，不出现在 PCI）
+{{ grep -qs '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null || ls /dev/nvidia[0-9]* >/dev/null 2>&1; }} && echo GPU_PRESENT || true
+# WSL 环境（GPU 驱动由 Windows 宿主提供，无需安装 Linux 驱动）
+grep -qi microsoft /proc/version 2>/dev/null && echo IS_WSL || true
 command -v nvcc >/dev/null 2>&1 && nvcc --version 2>/dev/null | grep -o 'release [0-9.]*' | head -1 || true
 # Rust 工具链（预编译 wheel 缺失时 Rust 扩展编译兜底；rustup 装在 ~/.cargo/bin，未必在 PATH）
 {{ command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]; }} && {{ cargo --version 2>/dev/null || "$HOME/.cargo/bin/cargo" --version 2>/dev/null; }} | grep -oE 'cargo [0-9.]+' | head -1 || true
@@ -162,6 +172,10 @@ fn section<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
     let start_marker = format!("=={name}==\n");
     let start = raw.find(&start_marker)? + start_marker.len();
     let rest = &raw[start..];
+    // 空段：下一行直接是下一个 ==xx== 标记时不得把标记（及其内容）当成本段内容
+    if rest.starts_with("==") {
+        return Some("");
+    }
     let end = rest.find("\n==").unwrap_or(rest.len());
     Some(rest[..end].trim())
 }
@@ -175,6 +189,10 @@ pub struct InitSignals {
     pub tools: HashMap<String, bool>,
     /// (GPU 型号, 驱动版本)
     pub gpus: Vec<(String, String)>,
+    /// 是否有 NVIDIA GPU（PCI 0x10de 或 /dev/nvidia*（WSL）；无 GPU 的虚拟机无需装驱动）
+    pub gpu_present: bool,
+    /// WSL 环境（GPU 驱动由 Windows 宿主提供，无需装 Linux 驱动）
+    pub wsl: bool,
     pub nvcc: Option<String>,
     /// Rust 工具链版本（cargo），预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发），1Cat 源码安装可能需要
     pub rust: Option<String>,
@@ -226,6 +244,14 @@ pub fn parse_signals(raw: &str) -> InitSignals {
     let gpu = section(raw, "GPU").unwrap_or("");
     for l in gpu.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if l == "GPU_NONE" {
+            continue;
+        }
+        if l == "GPU_PRESENT" {
+            s.gpu_present = true;
+            continue;
+        }
+        if l == "IS_WSL" {
+            s.wsl = true;
             continue;
         }
         if l.starts_with("release ") {
@@ -348,7 +374,7 @@ fn tool_ok(s: &InitSignals, name: &str) -> bool {
 /// default_onecat_image：档案未配置时的 1Cat 默认镜像
 pub fn build_items(
     s: &InitSignals,
-    settings: &AppSettings,
+    proxy: Option<&str>,
     default_onecat_image: &str,
 ) -> Vec<InitItem> {
     let mut v = Vec::new();
@@ -423,17 +449,44 @@ pub fn build_items(
     });
 
     // ---------- GPU 驱动 ----------
-    if s.gpus.is_empty() {
+    if s.gpus.is_empty() && s.gpu_present && s.wsl {
+        // WSL：GPU 在（/dev/nvidia*），但驱动在 Windows 宿主侧，无需也无法装 Linux 驱动
+        v.push(item(
+            "gpu.driver",
+            "gpu",
+            "NVIDIA 驱动",
+            "info",
+            Some("WSL 环境：GPU 驱动由 Windows 宿主提供，无需安装 Linux 驱动".into()),
+        ));
+    } else if s.gpus.is_empty() && s.gpu_present {
+        // 有物理 GPU 但驱动缺失 → 一键安装（不自动重启）+ manual 兜底
         v.push(InitItem {
+            fix: Some("nvidia-driver".into()),
             manual: Some("sudo ubuntu-drivers install && sudo reboot".into()),
             ..item(
                 "gpu.driver",
                 "gpu",
                 "NVIDIA 驱动",
                 "missing",
-                Some("nvidia-smi 不可用，驱动未安装或未加载".into()),
+                Some("检测到 NVIDIA GPU 但 nvidia-smi 不可用，驱动未安装或未加载（安装后需重启生效）".into()),
             )
         });
+    } else if s.gpus.is_empty() {
+        // 无 NVIDIA GPU（虚拟机/无独显）→ 无驱动可装，装 nvidia-utils 也只会报 No devices
+        let detail = if s.wsl {
+            // WSL：GPU 由 Windows 宿主驱动提供，看不到多半是宿主侧问题
+            "未检测到 NVIDIA GPU：WSL 的 GPU 由 Windows 宿主驱动提供，请检查宿主机 nvidia-smi 是否正常、NVIDIA 驱动版本（建议 ≥511.65）、wsl --version 是否够新，必要时在宿主机执行 wsl --shutdown 后重开"
+                .to_string()
+        } else {
+            "未检测到 NVIDIA GPU（虚拟机或无独显），无需安装驱动".to_string()
+        };
+        v.push(item(
+            "gpu.driver",
+            "gpu",
+            "NVIDIA 驱动",
+            "info",
+            Some(detail),
+        ));
     } else {
         let driver = s
             .gpus
@@ -485,13 +538,31 @@ pub fn build_items(
             "ok",
             Some(format!("{ver}（仅原生模式需要，docker 镜像自带）")),
         )),
-        None => v.push(item(
-            "gpu.nvcc",
-            "gpu",
-            "CUDA Toolkit",
-            "warn",
-            Some("未安装；仅原生模式需要（vLLM/sglang pip 安装、llama.cpp 编译），docker 模式不需要".into()),
-        )),
+        None => {
+            // 系统源 nvidia-cuda-toolkit 依赖 libcuda1（NVIDIA 驱动），驱动不可用时 apt 解析必失败
+            // （trixie 无驱动机实锤：E: Unable to correct problems）；WSL 驱动在宿主侧，永不满足
+            let can_apt = !s.wsl && !s.gpus.is_empty();
+            v.push(InitItem {
+                fix: can_apt.then(|| "apt".into()),
+                fix_pkgs: can_apt.then(|| vec!["nvidia-cuda-toolkit".into()]),
+                ..item(
+                    "gpu.nvcc",
+                    "gpu",
+                    "CUDA Toolkit",
+                    "warn",
+                    Some(if can_apt {
+                        "未安装；仅原生模式需要（vLLM/sglang pip 安装、llama.cpp 编译），docker 模式不需要（apt 一键安装）"
+                            .into()
+                    } else if s.wsl {
+                        "未安装；仅原生模式需要，docker 模式不需要（WSL 建议从 NVIDIA CUDA 源装 cuda-toolkit；系统源 nvidia-cuda-toolkit 依赖 Linux 驱动，WSL 上装不了）"
+                            .into()
+                    } else {
+                        "未安装；仅原生模式需要，docker 模式不需要（nvidia-cuda-toolkit 依赖 NVIDIA 驱动，需先安装驱动）"
+                            .into()
+                    }),
+                )
+            });
+        }
     }
     // Rust 工具链：预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发）
     match &s.rust {
@@ -503,16 +574,13 @@ pub fn build_items(
             Some(format!("cargo {ver}（预编译 wheel 缺失时 Rust 扩展编译兜底）")),
         )),
         None => v.push(InitItem {
-            manual: Some(
-                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
-                    .into(),
-            ),
+            fix: Some("rustup".into()),
             ..item(
                 "gpu.rust",
                 "gpu",
                 "Rust 工具链",
                 "warn",
-                Some("未安装；预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发），1Cat 源码安装可能需要".into()),
+                Some("未安装；预编译 wheel 缺失时 Rust 扩展编译兜底（3.12 venv 下极少触发），1Cat 源码安装可能需要（装用户目录，无需 sudo）".into()),
             )
         }),
     }
@@ -527,15 +595,28 @@ pub fn build_items(
                 "ok",
                 Some(format!("{desc}；{found}")),
             )),
-            None => v.push(item(
-                &format!("cuda.{key}"),
-                "cuda",
-                label,
-                missing_state,
-                Some(format!(
-                    "{desc}；未检测到（docker 镜像自带；原生模式可 apt 装 nvidia-cuda-toolkit 系或 pip 装 nvidia-* 包）"
-                )),
-            )),
+            None => {
+                // 同 gpu.nvcc：驱动不可用（含 WSL）时系统源 nvidia-cuda-toolkit 解析必失败，不给 apt 按钮
+                let apt = CUDA_LIBS_APT.contains(key) && !s.wsl && !s.gpus.is_empty();
+                v.push(InitItem {
+                    fix: apt.then(|| "apt".into()),
+                    fix_pkgs: apt.then(|| vec!["nvidia-cuda-toolkit".into()]),
+                    ..item(
+                        &format!("cuda.{key}"),
+                        "cuda",
+                        label,
+                        missing_state,
+                        Some(format!(
+                            "{desc}；未检测到（docker 镜像自带；原生模式{}）",
+                            if apt {
+                                "可一键 apt 装 nvidia-cuda-toolkit"
+                            } else {
+                                "可从 NVIDIA CUDA 源 apt 装或 pip 装 nvidia-* 包"
+                            }
+                        )),
+                    )
+                })
+            }
         }
     }
 
@@ -608,8 +689,8 @@ pub fn build_items(
             )
         });
     }
-    // daemon 代理（与全局设置比对）
-    let want = crate::settings::effective_proxy(settings);
+    // daemon 代理（与档案级生效代理比对：档案覆盖 > 全局）
+    let want = proxy;
     let cur = s.daemon_proxy.as_deref().filter(|p| !p.is_empty());
     match want {
         Some(w) => {
@@ -630,7 +711,7 @@ pub fn build_items(
                         "daemon 拉取代理",
                         "warn",
                         Some(format!(
-                            "全局已启用代理 {}，daemon 当前：{}（拉镜像走直连/旧代理）",
+                            "已启用代理 {}，daemon 当前：{}（拉镜像走直连/旧代理）",
                             w,
                             cur.unwrap_or("未配置")
                         )),
@@ -643,7 +724,7 @@ pub fn build_items(
             "docker",
             "daemon 拉取代理",
             "info",
-            Some(cur.map(|c| format!("已配置 {c}（全局代理未启用，不干预）")).unwrap_or_else(|| "未配置（全局代理未启用）".into())),
+            Some(cur.map(|c| format!("已配置 {c}（代理未启用，不干预）")).unwrap_or_else(|| "未配置（代理未启用）".into())),
         )),
     }
 
@@ -768,7 +849,8 @@ pub fn build_items(
             Some(fw_installed.join("、")),
         ));
     }
-    // 镜像（按仓库名前缀匹配，tag 任意）
+    // 镜像（按仓库名匹配，tag 任意；镜像站变体按仓库路径结尾匹配，
+    // 如 swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm 也计为已拉取）
     let imgs = [
         ("engine.img.vllm", "vLLM 镜像", "vllm/vllm-openai"),
         ("engine.img.sglang", "SGLang 镜像", "lmsysorg/sglang"),
@@ -780,7 +862,10 @@ pub fn build_items(
         let hit = s
             .images
             .iter()
-            .any(|i| i.rsplit_once(':').map(|(r, _)| r) == Some(repo));
+            .any(|i| match i.rsplit_once(':') {
+                Some((r, _)) => r == repo || r.ends_with(&format!("/{repo}")),
+                None => false,
+            });
         v.push(InitItem {
             fix: (!hit).then(|| "goto-frameworks".into()),
             ..item(
@@ -836,7 +921,8 @@ pub async fn server_init_check(
     };
     let out = session.run(&init_script(&profile.base_dir)).await?;
     let signals = parse_signals(&out.stdout);
-    Ok(summarize(build_items(&signals, &settings, &default_img)))
+    let proxy = crate::profile::effective_proxy(&profile, &settings);
+    Ok(summarize(build_items(&signals, proxy.as_deref(), &default_img)))
 }
 
 // ---------- apt 白名单安装 ----------
@@ -865,25 +951,22 @@ pub fn build_apt_script(
 ) -> Result<String, AppError> {
     validate_pkgs(pkgs)?;
     let list = pkgs.join(" ");
+    // 镜像切换片段自带提权三分支（单行 if/then/fi），不能被 wrap_line 逐行包装——
+    // 否则变成 `sudo if ...; then` / `... | sudo -S -p '' if ...; then`，bash 报
+    // "syntax error near unexpected token `then'"（line 2）
     let deb = crate::settings::deb_mirror_prefix(deb_mirror, password);
-    let mut lines: Vec<String> = vec!["set -e".to_string()];
+    let mut out: Vec<String> = vec!["set -e".to_string()];
     if !deb.is_empty() {
-        lines.push(deb);
+        out.push(deb);
     }
-    lines.push("apt-get update -y".into());
-    lines.push(format!("DEBIAN_FRONTEND=noninteractive apt-get install -y {list}"));
-    lines.push("echo APT_INSTALL_DONE".into());
-    Ok(lines
-        .into_iter()
-        .map(|l| {
-            if l.starts_with("set ") {
-                l
-            } else {
-                wrap_line(&l, mode, password)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n"))
+    out.push(wrap_line(crate::docker::APT_UPDATE_SOFT, mode, password));
+    out.push(wrap_line(
+        &format!("DEBIAN_FRONTEND=noninteractive apt-get install -y {list}"),
+        mode,
+        password,
+    ));
+    out.push(wrap_line("echo APT_INSTALL_DONE", mode, password));
+    Ok(out.join("\n"))
 }
 
 /// apt 安装确认弹框预览（密码用 *** 占位）
@@ -930,13 +1013,6 @@ pub async fn apt_install_start(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn settings_proxy(enabled: bool, url: &str) -> AppSettings {
-        let mut s = AppSettings::default();
-        s.proxy_enabled = enabled;
-        s.proxy_url = url.into();
-        s
-    }
 
     #[test]
     fn init_script_renders_json_runtimes() {
@@ -1031,7 +1107,7 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
     #[test]
     fn build_items_cuda_libs() {
         let s = parse_signals(RAW_Z420);
-        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items = build_items(&s, None, "vllm/vllm-openai");
         let get = |id: &str| items.iter().find(|i| i.id == id).unwrap();
         // dpkg 命中 → ok，detail 带包名+版本
         assert_eq!(get("cuda.cublas").state, "ok");
@@ -1049,39 +1125,49 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
             "nccl DPKG libnccl2 2.26.5-1\n",
         );
         let s2 = parse_signals(&raw_nocuda);
-        let items2 = build_items(&s2, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items2 = build_items(&s2, None, "vllm/vllm-openai");
         let g2 = |id: &str| items2.iter().find(|i| i.id == id).unwrap();
+        // toolkit 覆盖的库缺失 → warn + apt 一键按钮
         assert_eq!(g2("cuda.cublas").state, "warn");
-        assert_eq!(g2("cuda.cudnn").state, "warn");
+        assert_eq!(g2("cuda.cublas").fix.as_deref(), Some("apt"));
+        assert_eq!(
+            g2("cuda.cublas").fix_pkgs.as_deref(),
+            Some(&["nvidia-cuda-toolkit".to_string()][..])
+        );
+        // cudnn/nccl 缺失 → info（包名随版本变，不给按钮）
+        assert_eq!(g2("cuda.cudnn").state, "info");
+        assert!(g2("cuda.cudnn").fix.is_none());
         assert_eq!(g2("cuda.nccl").state, "ok");
-        // 专用库缺失 → info
+        // 专用库缺失 → info；toolkit 不覆盖的（cutlass）无按钮
         assert_eq!(g2("cuda.cufft").state, "info");
+        assert_eq!(g2("cuda.cufft").fix.as_deref(), Some("apt"));
         assert_eq!(g2("cuda.cutlass").state, "info");
+        assert!(g2("cuda.cutlass").fix.is_none());
     }
 
     #[test]
     fn build_items_rust_toolchain() {
         let s = parse_signals(RAW_Z420);
-        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items = build_items(&s, None, "vllm/vllm-openai");
         let get = |id: &str| items.iter().find(|i| i.id == id).unwrap();
         // 有 cargo → ok
         assert_eq!(get("gpu.rust").state, "ok");
         assert!(get("gpu.rust").detail.as_deref().unwrap().contains("1.88.0"));
 
-        // 无 cargo → warn + 手动 rustup 命令
+        // 无 cargo → warn + rustup 一键安装
         let raw_norust = RAW_Z420.replace("cargo 1.88.0\n", "");
         let s2 = parse_signals(&raw_norust);
         assert_eq!(s2.rust, None);
-        let items2 = build_items(&s2, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items2 = build_items(&s2, None, "vllm/vllm-openai");
         let r2 = items2.iter().find(|i| i.id == "gpu.rust").unwrap();
         assert_eq!(r2.state, "warn");
-        assert!(r2.manual.as_deref().unwrap().contains("rustup.rs"));
+        assert_eq!(r2.fix.as_deref(), Some("rustup"));
     }
 
     #[test]
     fn build_items_python312() {
         let s = parse_signals(RAW_Z420);
-        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items = build_items(&s, None, "vllm/vllm-openai");
         let p = items.iter().find(|i| i.id == "tools.python312").unwrap();
         // 有 3.12（uv 管理）→ ok，无修复按钮
         assert_eq!(p.state, "ok");
@@ -1095,7 +1181,7 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
         );
         let s2 = parse_signals(&raw_nop312);
         assert_eq!(s2.python312, None);
-        let items2 = build_items(&s2, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items2 = build_items(&s2, None, "vllm/vllm-openai");
         let p2 = items2.iter().find(|i| i.id == "tools.python312").unwrap();
         assert_eq!(p2.state, "missing");
         assert_eq!(p2.fix.as_deref(), Some("python312"));
@@ -1104,7 +1190,7 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
     #[test]
     fn build_items_z420_no_proxy_enabled() {
         let s = parse_signals(RAW_Z420);
-        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        let items = build_items(&s, None, "vllm/vllm-openai");
         let get = |id: &str| items.iter().find(|i| i.id == id).unwrap();
         assert_eq!(get("gpu.driver").state, "ok");
         assert_eq!(get("gpu.sm70").state, "warn"); // V100 提示
@@ -1123,7 +1209,7 @@ nvidia/cuda:12.8.1-devel-ubuntu22.04
     #[test]
     fn build_items_proxy_mismatch() {
         let s = parse_signals(RAW_Z420);
-        let items = build_items(&s, &settings_proxy(true, "http://192.168.31.88:7890"), "vllm/vllm-openai");
+        let items = build_items(&s, Some("http://192.168.31.88:7890"), "vllm/vllm-openai");
         let p = items.iter().find(|i| i.id == "docker.proxy").unwrap();
         assert_eq!(p.state, "warn");
         assert_eq!(p.fix.as_deref(), Some("docker-proxy"));
@@ -1163,10 +1249,58 @@ NONE
     fn build_items_fresh_machine() {
         let s = parse_signals(RAW_FRESH);
         assert!(s.gpus.is_empty());
-        let items = build_items(&s, &settings_proxy(false, ""), "vllm/vllm-openai");
+        assert!(!s.gpu_present); // RAW_FRESH 无 GPU_PRESENT → 虚拟机/无独显
+        let items = build_items(&s, None, "vllm/vllm-openai");
         let get = |id: &str| items.iter().find(|i| i.id == id).unwrap();
-        assert_eq!(get("gpu.driver").state, "missing");
-        assert!(get("gpu.driver").manual.as_deref().unwrap().contains("ubuntu-drivers"));
+        // 无 GPU 的机器 → 驱动项为 info（无驱动可装），不显示安装按钮
+        assert_eq!(get("gpu.driver").state, "info");
+        assert_eq!(get("gpu.driver").fix.as_deref(), None);
+        assert_eq!(get("gpu.driver").manual.as_deref(), None);
+        assert!(get("gpu.driver").detail.as_deref().unwrap().contains("未检测到 NVIDIA GPU"));
+        // 有 GPU 缺驱动 → 一键安装（不自动重启）+ 保留手动命令（含重启）
+        let raw_gpu = RAW_FRESH.replace("GPU_NONE\n", "GPU_NONE\nGPU_PRESENT\n");
+        let s2 = parse_signals(&raw_gpu);
+        assert!(s2.gpu_present);
+        assert!(!s2.wsl);
+        let items2 = build_items(&s2, None, "vllm/vllm-openai");
+        let d2 = items2.iter().find(|i| i.id == "gpu.driver").unwrap();
+        assert_eq!(d2.state, "missing");
+        assert_eq!(d2.fix.as_deref(), Some("nvidia-driver"));
+        assert!(d2.manual.as_deref().unwrap().contains("ubuntu-drivers"));
+        // WSL + GPU（paravirtual /dev/nvidia*）→ 驱动由 Windows 宿主提供，info 无安装按钮
+        let raw_wsl = RAW_FRESH.replace("GPU_NONE\n", "GPU_NONE\nGPU_PRESENT\nIS_WSL\n");
+        let s3 = parse_signals(&raw_wsl);
+        assert!(s3.wsl && s3.gpu_present);
+        let items3 = build_items(&s3, None, "vllm/vllm-openai");
+        let d3 = items3.iter().find(|i| i.id == "gpu.driver").unwrap();
+        assert_eq!(d3.state, "info");
+        assert_eq!(d3.fix.as_deref(), None);
+        assert!(d3.detail.as_deref().unwrap().contains("Windows 宿主"));
+        // WSL 且 GPU 不可见 → info + 宿主侧排查提示
+        let raw_wsl_nogpu = RAW_FRESH.replace("GPU_NONE\n", "GPU_NONE\nIS_WSL\n");
+        let s4 = parse_signals(&raw_wsl_nogpu);
+        let items4 = build_items(&s4, None, "vllm/vllm-openai");
+        let d4 = items4.iter().find(|i| i.id == "gpu.driver").unwrap();
+        assert_eq!(d4.state, "info");
+        assert!(d4.detail.as_deref().unwrap().contains("wsl --shutdown"));
+        // CUDA Toolkit 缺失且驱动不可用（RAW_FRESH 无 GPU）→ 不给 apt（nvidia-cuda-toolkit 依赖 libcuda1，无驱动时解析必失败）
+        assert_eq!(get("gpu.nvcc").state, "warn");
+        assert_eq!(get("gpu.nvcc").fix.as_deref(), None);
+        assert!(get("gpu.nvcc").detail.as_deref().unwrap().contains("需先安装驱动"));
+        assert_eq!(get("cuda.cublas").fix.as_deref(), None);
+        // 驱动已装（nvidia-smi 可用）+ nvcc 缺 → apt 一键
+        let raw_drv = RAW_FRESH.replace("GPU_NONE\n", "NVIDIA A100-SXM4-80GB, 550.54.15\n");
+        let s5 = parse_signals(&raw_drv);
+        assert!(!s5.gpus.is_empty());
+        let items5 = build_items(&s5, None, "vllm/vllm-openai");
+        let n5 = items5.iter().find(|i| i.id == "gpu.nvcc").unwrap();
+        assert_eq!(n5.fix.as_deref(), Some("apt"));
+        assert_eq!(n5.fix_pkgs.as_deref(), Some(&["nvidia-cuda-toolkit".to_string()][..]));
+        assert_eq!(items5.iter().find(|i| i.id == "cuda.cublas").unwrap().fix.as_deref(), Some("apt"));
+        // WSL → 即使探测到 GPU 也不给 apt（驱动在宿主侧，libcuda1 永不满足），提示走 CUDA 源
+        let n_wsl = items3.iter().find(|i| i.id == "gpu.nvcc").unwrap();
+        assert_eq!(n_wsl.fix.as_deref(), None);
+        assert!(n_wsl.detail.as_deref().unwrap().contains("NVIDIA CUDA 源"));
         assert_eq!(get("sys.curl").state, "missing");
         assert_eq!(get("sys.curl").fix.as_deref(), Some("apt"));
         assert_eq!(get("sys.curl").fix_pkgs.as_deref(), Some(&["curl".to_string()][..]));
@@ -1183,6 +1317,7 @@ NONE
     fn apt_whitelist_enforced() {
         assert!(build_apt_script(SudoMode::Root, None, &["curl".into()], "official").is_ok());
         assert!(build_apt_script(SudoMode::Root, None, &["curl".into(), "cmake".into()], "official").is_ok());
+        assert!(build_apt_script(SudoMode::Root, None, &["nvidia-cuda-toolkit".into()], "official").is_ok());
         assert!(build_apt_script(SudoMode::Root, None, &["nginx".into()], "official").is_err());
         assert!(build_apt_script(SudoMode::Root, None, &[], "official").is_err());
         let s = build_apt_script(SudoMode::SudoPass, Some("pw"), &["curl".into()], "official").unwrap();
@@ -1199,5 +1334,51 @@ NONE
         // official → 无切换片段
         let s2 = build_apt_script(SudoMode::Root, None, &["curl".into()], "official").unwrap();
         assert!(!s2.contains("sed -i 's#http://archive.ubuntu.com"));
+    }
+
+    #[test]
+    fn apt_script_deb_prefix_not_wrapped() {
+        // 回归：镜像切换片段自带 if/then/fi，若被 wrap_line 包装会变成
+        // `printf ... | sudo -S -p '' if grep ...; then` → bash "line 2: syntax error
+        // near unexpected token `then'"（31.43 装 nvidia-cuda-toolkit 实锤）
+        for (mode, pw) in [
+            (SudoMode::Root, None),
+            (SudoMode::Sudo, None),
+            (SudoMode::SudoPass, Some("pw")),
+        ] {
+            let s =
+                build_apt_script(mode, pw, &["nvidia-cuda-toolkit".into()], "tuna").unwrap();
+            let deb_line = s.lines().nth(1).unwrap();
+            assert!(
+                deb_line.starts_with("if grep -qE 'archive"),
+                "deb 片段须独立成行且不包装: {s}"
+            );
+            assert!(!s.contains("sudo if grep"), "deb 片段被 sudo 包装: {s}");
+            assert!(!s.contains("-p '' if grep"), "deb 片段被 sudo -S 包装: {s}");
+            assert!(
+                s.contains("apt-get install -y nvidia-cuda-toolkit"),
+                "apt 命令丢失: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn apt_script_update_soft_failure() {
+        // 回归：第三方仓库签名被拒（trixie sqv 拒 NVIDIA 旧 key）不得让 apt 通道整体失败
+        for (mode, pw) in [
+            (SudoMode::Root, None),
+            (SudoMode::Sudo, None),
+            (SudoMode::SudoPass, Some("pw")),
+        ] {
+            let s = build_apt_script(mode, pw, &["curl".into()], "official").unwrap();
+            assert!(
+                s.contains(crate::docker::APT_UPDATE_SOFT),
+                "{mode:?} 缺软失败 update: {s}"
+            );
+            assert!(
+                !s.lines().any(|l| l.trim() == "apt-get update -y" || l.trim() == "sudo apt-get update -y"),
+                "{mode:?} 存在致命的 apt-get update: {s}"
+            );
+        }
     }
 }

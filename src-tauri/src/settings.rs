@@ -185,21 +185,6 @@ pub fn uv_python_mirror_prefix(s: &AppSettings) -> String {
     }
 }
 
-/// 服务器侧命令的代理导出前缀：http_proxy/https_proxy 大小写全套 + no_proxy
-/// 未启用代理时返回空串
-pub fn proxy_env_prefix(s: &AppSettings) -> String {
-    match effective_proxy(s) {
-        Some(u) => {
-            let u = u.replace('\'', "'\\''");
-            format!(
-                "export http_proxy='{u}' https_proxy='{u}' HTTP_PROXY='{u}' HTTPS_PROXY='{u}' \
-                 no_proxy='localhost,127.0.0.1' NO_PROXY='localhost,127.0.0.1'; "
-            )
-        }
-        None => String::new(),
-    }
-}
-
 const STORE_KEY: &str = "settings";
 
 pub fn load_settings(app: &AppHandle) -> Result<AppSettings, AppError> {
@@ -247,41 +232,6 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn proxy_prefix_disabled_or_empty() {
-        let mut s = AppSettings::default();
-        assert_eq!(proxy_env_prefix(&s), "");
-        s.proxy_enabled = true;
-        assert_eq!(proxy_env_prefix(&s), "");
-    }
-
-    #[test]
-    fn proxy_prefix_exports_all_variants() {
-        let mut s = AppSettings::default();
-        s.proxy_enabled = true;
-        s.proxy_url = "http://192.168.31.10:7890".into();
-        let p = proxy_env_prefix(&s);
-        for v in [
-            "http_proxy='http://192.168.31.10:7890'",
-            "https_proxy='http://192.168.31.10:7890'",
-            "HTTP_PROXY='http://192.168.31.10:7890'",
-            "HTTPS_PROXY='http://192.168.31.10:7890'",
-            "no_proxy='localhost,127.0.0.1'",
-            "NO_PROXY='localhost,127.0.0.1'",
-        ] {
-            assert!(p.contains(v), "missing {v} in {p}");
-        }
-        assert!(p.ends_with("; "));
-    }
-
-    #[test]
-    fn proxy_prefix_escapes_quote() {
-        let mut s = AppSettings::default();
-        s.proxy_enabled = true;
-        s.proxy_url = "http://a'b:1".into();
-        assert!(proxy_env_prefix(&s).contains(r#"'http://a'\''b:1'"#));
-    }
 
     #[test]
     fn uv_mirror_prefix_empty_by_default() {

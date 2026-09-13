@@ -64,6 +64,10 @@ fn section<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
     let start_marker = format!("=={name}==\n");
     let start = raw.find(&start_marker)? + start_marker.len();
     let rest = &raw[start..];
+    // 空段：下一行直接是下一个 ==xx== 标记时不得把标记（及其内容）当成本段内容
+    if rest.starts_with("==") {
+        return Some("");
+    }
     let end = rest.find("\n==").unwrap_or(rest.len());
     Some(rest[..end].trim())
 }

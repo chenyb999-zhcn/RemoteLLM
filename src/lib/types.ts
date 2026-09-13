@@ -13,6 +13,8 @@ export interface ServerProfile {
   modelsDir?: string | null;
   onecatRepo?: string | null;
   onecatImage?: string | null;
+  /** 档案级代理覆盖：undefined/null = 跟随全局；"" = 强制不走代理；其他 = 指定代理 */
+  proxy?: string | null;
 }
 
 export interface AppSettings {

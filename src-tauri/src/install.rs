@@ -15,12 +15,15 @@ fn get_profile(app: &AppHandle, profile_id: &str) -> Result<ServerProfile, AppEr
 }
 
 /// pip 自愈：缺 pip 时用官网 get-pip.py 安装（python urllib 下载，不依赖 curl；
-/// 系统目录不可写时自动回退 --user）。代理由脚本前缀的 http_proxy/https_proxy 环境变量生效。
+/// 系统目录不可写时自动回退 --user）。PEP 668（Debian 12+/Ubuntu 23+ 的
+/// EXTERNALLY-MANAGED）下系统装与 --user 装都会被拦截，故一律带
+/// --break-system-packages（get-pip 内置新版 pip，支持该参数）。
+/// 代理由脚本前缀的 http_proxy/https_proxy 环境变量生效。
 fn pip_bootstrap() -> &'static str {
     r#"if ! python3 -m pip --version >/dev/null 2>&1; then
 echo "[pip] 缺少 pip，使用官网 get-pip.py 安装 ..."
 python3 -c "import urllib.request; urllib.request.urlretrieve('https://bootstrap.pypa.io/get-pip.py', '$HOME/.rl_get_pip.py')" \
-  && { python3 "$HOME/.rl_get_pip.py" || python3 "$HOME/.rl_get_pip.py" --user; } \
+  && { python3 "$HOME/.rl_get_pip.py" --break-system-packages || python3 "$HOME/.rl_get_pip.py" --user --break-system-packages; } \
   || { echo "ERROR: get-pip.py 安装失败"; exit 1; }
 fi
 "#
@@ -84,7 +87,7 @@ pub fn build_install_script(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(default_onecat_repo);
     let onecat_repo_q = onecat_repo.replace('\'', "'\\''");
-    let proxy = crate::settings::proxy_env_prefix(settings);
+    let proxy = crate::profile::proxy_env_prefix(profile, settings);
     let idx = crate::settings::pip_index_arg(&settings.pip_index);
     // uv python install 3.12 的镜像导出前缀（UV_PYTHON_INSTALL_MIRROR，空 = 官方 GitHub）
     let mirror = crate::settings::uv_python_mirror_prefix(settings);
@@ -95,7 +98,7 @@ pub fn build_install_script(
         Some(pw) => format!(
             "{{ {u} && {i}; }} || {{ echo \"ERROR: 工具链安装失败（sudo 密码与登录密码不同或网络问题）。请先在「环境检查」页安装 build-essential + cmake 后重试\"; exit 1; }}",
             u = crate::docker::wrap_line(
-                "apt-get update -y",
+                crate::docker::APT_UPDATE_SOFT,
                 crate::docker::SudoMode::SudoPass,
                 Some(pw)
             ),
@@ -167,10 +170,10 @@ pub fn build_install_script(
             "{proxy}{deb}mkdir -p {fw_dir}\ncd {fw_dir}\n\
               if ! {{ command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1; }}; then\n\
               echo \"[toolchain] 缺少 g++/make/cmake，尝试自动安装 build-essential + cmake ...\"\n\
-              if [ \"$(id -u)\" = \"0\" ]; then\n\
-              {{ apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake; }} || {{ echo \"ERROR: 工具链安装失败（apt-get）\"; exit 1; }}\n\
-              elif sudo -n true 2>/dev/null; then\n\
-              {{ sudo apt-get update -y && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake; }} || {{ echo \"ERROR: 工具链安装失败（sudo apt-get）\"; exit 1; }}\n\
+               if [ \"$(id -u)\" = \"0\" ]; then\n\
+               {{ apt-get update -y || echo \"[warn] apt update：部分源失败（如第三方仓库签名被拒），继续\"; DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake; }} || {{ echo \"ERROR: 工具链安装失败（apt-get）\"; exit 1; }}\n\
+               elif sudo -n true 2>/dev/null; then\n\
+               {{ sudo apt-get update -y || echo \"[warn] apt update：部分源失败（如第三方仓库签名被拒），继续\"; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake; }} || {{ echo \"ERROR: 工具链安装失败（sudo apt-get）\"; exit 1; }}\n\
               else\n\
               {llama_else}\n\
               fi\n\
@@ -201,6 +204,58 @@ pub fn build_install_script(
         }
         "docker-sglang" => "docker pull 'lmsysorg/sglang:latest-cu129' 2>&1".into(),
         "docker-llama" => "docker pull 'ghcr.io/ggml-org/llama.cpp:server-cuda' 2>&1".into(),
+        // ---------- 环境检查页：Rust 工具链 / NVIDIA 驱动一键安装 ----------
+        // rustup 装用户目录（~/.cargo），免 sudo；检测与安装位置一致（PATH 或 ~/.cargo/bin）
+        "rustup" => format!(
+            "{proxy}export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
+               # 安装 Rust 工具链（预编译 wheel 缺失时 Rust 扩展编译兜底，1Cat 源码安装可能需要）。\n\
+               if command -v rustup >/dev/null 2>&1 || [ -x \"$HOME/.cargo/bin/rustup\" ]; then\n\
+               echo \"[ok] rustup 已安装：$(rustup --version 2>/dev/null || \"$HOME/.cargo/bin/rustup\" --version 2>/dev/null)\"\n\
+               else\n\
+               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal 2>&1 || {{ echo \"ERROR: rustup 安装失败（网络问题？）\"; exit 1; }}\n\
+               fi\n\
+               echo \"[ok] $(cargo --version 2>/dev/null || \"$HOME/.cargo/bin/cargo\" --version 2>/dev/null || echo cargo 不可用)\"\n\
+               echo RUSTUP_DONE",
+        ),
+        // ubuntu-drivers 自动选推荐版本；只装不自动重启（新内核模块需用户手动重启服务器生效）。
+        // 三分支 sudo 与 llama-cpp 工具链自愈同模式；密码分支逐行包装（管道只在第一段提权，
+        // 但 wrap_line 的 printf|sudo 整体是一条命令，无二次提权需求）
+        "nvidia-driver" => {
+            let pass_steps = sudo_pass.map(|pw| {
+                format!(
+                    "{}\n{}\n{} || {{ echo \"ERROR: 驱动安装失败（sudo 密码与登录密码不同或网络问题）\"; exit 1; }}",
+                    crate::docker::wrap_line(crate::docker::APT_UPDATE_SOFT, crate::docker::SudoMode::SudoPass, Some(pw)),
+                    crate::docker::wrap_line(
+                        "DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-drivers-common",
+                        crate::docker::SudoMode::SudoPass,
+                        Some(pw)
+                    ),
+                    crate::docker::wrap_line("ubuntu-drivers install", crate::docker::SudoMode::SudoPass, Some(pw))
+                )
+            });
+            let else_branch = pass_steps.unwrap_or_else(|| {
+                "echo \"ERROR: sudo 需要密码但当前不可用（密钥登录）。请手动执行: sudo ubuntu-drivers install && sudo reboot\"; exit 1".into()
+            });
+            format!(
+                "{proxy}{deb}\
+                    echo \"[driver] 安装 NVIDIA 驱动（ubuntu-drivers 自动选推荐版本，不自动重启）...\"\n\
+                    if grep -qi microsoft /proc/version 2>/dev/null; then echo \"WSL 环境：GPU 驱动由 Windows 宿主提供，无需安装 Linux 驱动（如需 CUDA 请装 nvidia-cuda-toolkit）\"; exit 0; fi\n\
+                    _gpu=0\n\
+                    for _vf in /sys/bus/pci/devices/*/vendor; do [ \"$(cat \"$_vf\" 2>/dev/null)\" = \"0x10de\" ] && _gpu=1 && break; done\n\
+                    ls /dev/nvidia[0-9]* >/dev/null 2>&1 && _gpu=1\n\
+                    if [ \"$_gpu\" != \"1\" ]; then echo \"未检测到 NVIDIA GPU（PCI 0x10de 或 /dev/nvidia*）：虚拟机/无独显机器无需安装驱动，环境检查页该项应显示为信息项\"; exit 3; fi\n\
+                    if [ \"$(id -u)\" = \"0\" ]; then\n\
+                    apt-get update -y || echo \"[warn] apt update：部分源失败（如第三方仓库签名被拒），继续\"; {{ DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-drivers-common && ubuntu-drivers install; }} || {{ echo \"ERROR: 驱动安装失败（apt）\"; exit 1; }}\n\
+                    elif sudo -n true 2>/dev/null; then\n\
+                    {{ sudo apt-get update -y || echo \"[warn] apt update：部分源失败（如第三方仓库签名被拒），继续\"; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-drivers-common && sudo ubuntu-drivers install; }} || {{ echo \"ERROR: 驱动安装失败（sudo apt）\"; exit 1; }}\n\
+                   else\n\
+                   {else_branch}\n\
+                   fi\n\
+                   _dv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)\n\
+                   if [ -n \"$_dv\" ]; then echo \"[ok] 驱动已生效：$_dv\"; else echo \"[ok] 驱动已安装，nvidia-smi 仍不可用：请重启服务器加载新内核模块后重新检查\"; fi\n\
+                   echo DRIVER_INSTALL_DONE"
+            )
+        }
         // ---------- 卸载：只移除引擎自身（venv 或 pip 包），保留其它引擎，不影响共享依赖 ----------
         "uninstall-vllm" => format!(
             "echo \"[uninstall] 删除 vllm 专用 venv（不影响其它引擎）\"\n\
@@ -286,6 +341,7 @@ mod tests {
             models_dir: None,
             onecat_repo: None,
             onecat_image: None,
+            proxy: None,
         }
     }
 
@@ -447,6 +503,45 @@ mod tests {
         assert!(s.contains("PY312_DONE"), "python312 缺完成标记: {s}");
         assert!(!s.contains("apt-get"), "python312 不应走 apt: {s}");
         assert!(!s.contains("sudo"), "python312 不应需要 sudo: {s}");
+    }
+
+    #[test]
+    fn rustup_tool_script() {
+        // 环境检查页「Rust 工具链」一键安装：rustup 装用户目录（~/.cargo），免 sudo
+        let d = crate::settings::AppSettings::default();
+        let s = build_install_script(&profile(), &d, "rustup", None).unwrap();
+        assert!(s.contains("sh.rustup.rs"), "rustup 缺安装器地址: {s}");
+        assert!(s.contains("--profile minimal"), "rustup 未用 minimal profile: {s}");
+        assert!(s.contains("RUSTUP_DONE"), "rustup 缺完成标记: {s}");
+        assert!(!s.contains("apt-get"), "rustup 不应走 apt: {s}");
+        assert!(!s.contains("sudo"), "rustup 不应需要 sudo: {s}");
+    }
+
+    #[test]
+    fn nvidia_driver_tool_script() {
+        // 环境检查页「NVIDIA 驱动」一键安装：ubuntu-drivers 只装不自动重启
+        let d = crate::settings::AppSettings::default();
+        // 密码登录档案：密码分支逐行 printf|sudo -S 提权，且全程无 reboot
+        let sp = build_install_script(&profile(), &d, "nvidia-driver", Some("x")).unwrap();
+        assert!(sp.contains("ubuntu-drivers install"), "driver 缺 ubuntu-drivers: {sp}");
+        assert!(sp.contains("apt-get install -y ubuntu-drivers-common"), "driver 未装 common 包: {sp}");
+        assert!(sp.contains("DRIVER_INSTALL_DONE"), "driver 缺完成标记: {sp}");
+        assert!(!sp.contains("reboot"), "driver 不得自动重启: {sp}");
+        // WSL 环境：驱动由 Windows 宿主提供，探测到 WSL 直接 exit 0（不跑 apt）
+        assert!(sp.contains("grep -qi microsoft /proc/version"), "driver 缺 WSL 探测: {sp}");
+        assert!(sp.contains("GPU 驱动由 Windows 宿主提供"), "driver 缺 WSL 提示: {sp}");
+        // 无 GPU 守卫：PCI vendor 0x10de 或 /dev/nvidia*（WSL GPU 不走 PCI），无 GPU 直接 exit 3（避免空转 apt）
+        assert!(sp.contains("0x10de"), "driver 缺 GPU 探测: {sp}");
+        assert!(sp.contains("ls /dev/nvidia[0-9]*"), "driver GPU 探测缺 WSL /dev/nvidia*: {sp}");
+        assert!(sp.contains("exit 3"), "driver 缺无 GPU 退出: {sp}");
+        assert!(sp.contains("sudo -n true"), "driver 缺免密 sudo 分支: {sp}");
+        assert!(sp.contains("printf '%s\\n' 'x' | sudo -S -p '' ubuntu-drivers install"), "driver 密码分支未包装: {sp}");
+        // 密钥登录档案：给手动命令指引，不出现 sudo -S
+        let mut k = profile();
+        k.auth = crate::profile::AuthMethod::Key { key_path: "~/.ssh/id".into(), passphrase: None };
+        let sk = build_install_script(&k, &d, "nvidia-driver", None).unwrap();
+        assert!(sk.contains("sudo ubuntu-drivers install && sudo reboot"), "driver 缺手动指引: {sk}");
+        assert!(!sk.contains("sudo -S"), "driver 密钥分支不应有 sudo -S: {sk}");
     }
 
     #[test]

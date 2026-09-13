@@ -75,6 +75,11 @@ fn section<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
     let start_marker = format!("=={name}==\n");
     let start = raw.find(&start_marker)? + start_marker.len();
     let rest = &raw[start..];
+    // 空段：下一行直接是下一个 ==xx== 标记时不得把标记（及其内容）当成本段内容
+    // （无 nvcc/cuda 时 CUDA 段为空，否则会把 "==DOCKER==" 及其版本吞进来，总览 CUDA 卡片曾显示 "==DOCKER=="）
+    if rest.starts_with("==") {
+        return Some("");
+    }
     let end = rest.find("\n==").unwrap_or(rest.len());
     Some(rest[..end].trim())
 }
@@ -231,5 +236,17 @@ mod tests {
         let d = parse_disks("\n  \nonlyonefield\n/ x 1 2\n");
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].mount, "/");
+    }
+
+    #[test]
+    fn parses_empty_section_as_empty() {
+        // 回归：空段时不得把下一段的 ==xx== 标记当内容
+        // （WSL 机器无 nvcc/cuda 时总览 CUDA 卡片曾显示 "==DOCKER=="）
+        let raw = "==OS==\nUbuntu 24.04\n6.1\n==CPU==\n8\nx\n==MEM==\n1 2\n==DISK==\n/ ext4 1 2\n==PYTHON==\n==CUDA==\n==DOCKER==\nDocker version 27.0.0\n==GPU==\n==END==\n";
+        assert_eq!(section(raw, "OS"), Some("Ubuntu 24.04\n6.1"));
+        assert_eq!(section(raw, "PYTHON"), Some(""));
+        assert_eq!(section(raw, "CUDA"), Some(""));
+        assert_eq!(section(raw, "GPU"), Some(""));
+        assert_eq!(section(raw, "DOCKER"), Some("Docker version 27.0.0"));
     }
 }

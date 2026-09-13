@@ -54,6 +54,10 @@ fn section<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
     let marker = format!("=={name}==\n");
     let start = raw.find(&marker)? + marker.len();
     let rest = &raw[start..];
+    // 空段：下一行直接是下一个 ==xx== 标记时不得把标记（及其内容）当成本段内容
+    if rest.starts_with("==") {
+        return Some("");
+    }
     let end = rest.find("\n==").unwrap_or(rest.len());
     Some(rest[..end].trim())
 }
@@ -204,6 +208,11 @@ fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// apt-get update 软失败行：任一部分源失败（如第三方仓库签名被拒——Debian trixie
+/// 的 sqv 拒 NVIDIA 旧 key 的 SHA1 绑定）只告警继续，不中止整个安装；官方源照常验证
+pub(crate) const APT_UPDATE_SOFT: &str =
+    "apt-get update -y || echo \"[warn] apt update：部分源失败（如第三方仓库签名被拒），继续安装\"";
+
 /// 逐行包装 sudo（安装脚本必须是逐行独立命令）
 pub(crate) fn wrap_line(line: &str, mode: SudoMode, password: Option<&str>) -> String {
     match mode {
@@ -236,7 +245,7 @@ pub fn build_install_script(mode: SudoMode, password: Option<&str>, deb_mirror: 
         steps.push((deb, false));
     }
     steps.extend([
-        ("apt-get update -y".to_string(), true),
+        (APT_UPDATE_SOFT.to_string(), true),
         ("DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io".to_string(), true),
         ("systemctl enable docker".to_string(), true),
         ("systemctl restart docker".to_string(), true),
@@ -248,7 +257,7 @@ pub fn build_install_script(mode: SudoMode, password: Option<&str>, deb_mirror: 
         ("RL_EOF".to_string(), false),
         ("bash \"$HOME/.rl_nvidia_repo.sh\"".to_string(), true),
         ("rm -f \"$HOME/.rl_nvidia_repo.sh\"".to_string(), false),
-        ("apt-get update -y || true".to_string(), true),
+        (APT_UPDATE_SOFT.to_string(), true),
         ("DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit || true".to_string(), true),
         ("nvidia-ctk runtime configure --runtime=docker || true".to_string(), true),
         ("systemctl restart docker || true".to_string(), true),
@@ -410,7 +419,7 @@ pub fn docker_proxy_preview(sudo_mode: String, proxy_url: Option<String>) -> Res
     build_proxy_script(mode, password, proxy_url.as_deref())
 }
 
-/// 应用 daemon 代理配置（读全局设置：启用 → 配置，禁用 → 移除）
+/// 应用 daemon 代理配置（档案级生效代理：档案覆盖 > 全局；有 → 配置，无 → 移除）
 #[tauri::command]
 pub async fn docker_proxy_start(
     app: AppHandle,
@@ -419,7 +428,11 @@ pub async fn docker_proxy_start(
     password: Option<String>,
 ) -> Result<String, AppError> {
     let settings = crate::settings::load_settings(&app)?;
-    let proxy_url = crate::settings::effective_proxy(&settings).map(|s| s.to_string());
+    let profile = crate::profile::load_profiles(&app)?
+        .into_iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| AppError::Other(format!("服务器档案不存在: {profile_id}")))?;
+    let proxy_url = crate::profile::effective_proxy(&profile, &settings);
     let mode = probe_sudo_mode(&state, &profile_id).await?;
     if mode == SudoMode::SudoPass && password.as_deref().map(str::trim).unwrap_or("").is_empty() {
         return Err(AppError::Other("该服务器 sudo 需要密码，请先输入 sudo 密码".into()));
@@ -560,6 +573,28 @@ mod tests {
         assert!(s.contains("gpg --batch --yes --dearmor"));
         assert!(s.ends_with("echo DOCKER_INSTALL_DONE"));
         assert!(!s.contains("sudo"));
+    }
+
+    #[test]
+    fn install_script_update_soft_failure() {
+        // 回归：第三方仓库签名失败（Debian trixie 的 sqv 拒 NVIDIA SHA1 旧 key → exit 100）
+        // 不得中止整个安装 —— 两处 apt-get update 都必须是软失败形式；官方源签名照常验证
+        for (mode, pw) in [
+            (SudoMode::Root, None),
+            (SudoMode::Sudo, None),
+            (SudoMode::SudoPass, Some("p")),
+        ] {
+            let s = build_install_script(mode, pw, "official");
+            let bare_fatal = s.lines().any(|l| {
+                let t = l.trim();
+                (t == "apt-get update -y"
+                    || t == "sudo apt-get update -y"
+                    || t.ends_with("| sudo -S -p '' apt-get update -y"))
+                    && !t.contains("||")
+            });
+            assert!(!bare_fatal, "{mode:?} 存在致命的 apt-get update: {s}");
+            assert_eq!(s.matches(APT_UPDATE_SOFT).count(), 2, "{mode:?} 软失败 update 行数");
+        }
     }
 
     #[test]

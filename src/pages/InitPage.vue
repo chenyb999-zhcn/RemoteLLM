@@ -17,6 +17,7 @@ import { useRouter } from "vue-router";
 import { useServerStore } from "../stores/server";
 import { useSettingsStore } from "../stores/settings";
 import { api, onTaskStream } from "../lib/api";
+import { effectiveProxy } from "../lib/proxy";
 import type { DockerStatus, InitCheckResult, InitItem } from "../lib/types";
 import DockerInstaller from "../components/DockerInstaller.vue";
 import StreamLog from "../components/StreamLog.vue";
@@ -47,6 +48,8 @@ const FIX_I18N: Record<string, string> = {
   huggingface: "init.fixHf",
   "parser-libs": "init.fixParser",
   python312: "init.fixPython312",
+  rustup: "init.fixRustup",
+  "nvidia-driver": "init.fixDriver",
   "docker-install": "init.fixDockerInstall",
   "docker-authorize": "init.fixDockerAuth",
   "docker-proxy": "init.fixDockerProxy",
@@ -232,7 +235,7 @@ async function askDocker(kind: "install" | "authorize" | "proxy") {
   if (kind === "install") dockerInstallerRef.value?.askInstall(pid, st);
   else if (kind === "authorize") dockerInstallerRef.value?.askAuthorize(pid, st);
   else {
-    const url = settings.value.proxyUrl.trim();
+    const url = effectiveProxy(current.value, settings.value);
     if (!url) {
       message.warning(t("init.proxyNotSet"));
       return;
@@ -251,7 +254,14 @@ function onFix(item: InitItem) {
   if (!fix) return;
   if (fix === "apt") {
     void askApt(item.fixPkgs ?? []);
-  } else if (fix === "modelscope" || fix === "huggingface" || fix === "parser-libs" || fix === "python312") {
+  } else if (
+    fix === "modelscope" ||
+    fix === "huggingface" ||
+    fix === "parser-libs" ||
+    fix === "python312" ||
+    fix === "rustup" ||
+    fix === "nvidia-driver"
+  ) {
     void askInstall(fix);
   } else if (fix === "docker-install") {
     void askDocker("install");

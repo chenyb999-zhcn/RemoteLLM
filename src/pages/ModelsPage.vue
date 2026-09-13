@@ -311,7 +311,7 @@ function doDelete(m: LocalModel) {
       if (!id) return;
       try {
         const r = await api.modelDelete(id, m.rel);
-        message.success(r);
+        message.success(r === "NOT_FOUND" ? t("models.deleteGone") : t("models.deleted"));
         refreshLocal();
       } catch (e: any) {
         message.error(t("models.deleteFailed", { msg: e?.message ?? JSON.stringify(e) }));

@@ -10,6 +10,7 @@ import {
   NModal,
   NRadioButton,
   NRadioGroup,
+  NSelect,
   NSpace,
   NDataTable,
   NTag,
@@ -47,6 +48,8 @@ const form = reactive({
   modelsDir: "",
   onecatRepo: "",
   onecatImage: "",
+  proxyMode: "follow" as "follow" | "off" | "custom",
+  proxyUrl: "",
   advanced: false,
 });
 
@@ -87,6 +90,8 @@ function openAdd() {
     modelsDir: "",
     onecatRepo: "",
     onecatImage: "",
+    proxyMode: "follow",
+    proxyUrl: "",
     advanced: false,
   });
   showModal.value = true;
@@ -107,10 +112,18 @@ function openEdit(p: ServerProfile) {
     modelsDir: p.modelsDir ?? "",
     onecatRepo: p.onecatRepo ?? "",
     onecatImage: p.onecatImage ?? "",
+    proxyMode: p.proxy === null || p.proxy === undefined ? "follow" : p.proxy.trim() === "" ? "off" : "custom",
+    proxyUrl: p.proxy ?? "",
     advanced: false,
   });
   showModal.value = true;
 }
+
+const proxyModeOptions = computed(() => [
+  { label: t("servers.proxyFollow"), value: "follow" },
+  { label: t("servers.proxyOff"), value: "off" },
+  { label: t("servers.proxyCustom"), value: "custom" },
+]);
 
 function buildProfile(): ServerProfile {
   const id = editingId.value ?? crypto.randomUUID();
@@ -128,6 +141,12 @@ function buildProfile(): ServerProfile {
     modelsDir: form.modelsDir.trim() || null,
     onecatRepo: form.onecatRepo || null,
     onecatImage: form.onecatImage || null,
+    proxy:
+      form.proxyMode === "follow"
+        ? null
+        : form.proxyMode === "off"
+          ? ""
+          : form.proxyUrl.trim() || null,
   };
 }
 
@@ -288,6 +307,12 @@ onMounted(() => store.loadProfiles());
               v-model:value="form.onecatImage"
               :placeholder="t('servers.onecatImagePh')"
             />
+          </n-form-item>
+          <n-form-item :label="t('servers.proxyOverride')">
+            <n-select v-model:value="form.proxyMode" :options="proxyModeOptions" />
+          </n-form-item>
+          <n-form-item v-if="form.proxyMode === 'custom'" :label="t('servers.proxyUrl')">
+            <n-input v-model:value="form.proxyUrl" :placeholder="t('servers.proxyUrlPh')" />
           </n-form-item>
         </template>
       </n-form>

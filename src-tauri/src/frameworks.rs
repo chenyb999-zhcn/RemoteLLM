@@ -586,7 +586,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
             }
         }
         "fastllm" => {
-            // 默认镜像 docker.io/garenleeasa/ftllm 的 entrypoint 即 ftllm 本体（miniconda3），纯参数即可；
+            // 默认镜像（SWR 国内镜像，与 docker.io/garenleeasa/ftllm 同源）的 entrypoint 即 ftllm 本体（miniconda3），纯参数即可；
             // 自建 ghcr 镜像（NGC 包装 entrypoint）走自定义镜像 + customCmd，需自行写 `ftllm server`
             run.push(format!("server {}", m));
             run.push(format!("--port {}", cfg.port));
@@ -605,7 +605,8 @@ fn default_docker_image(fw: &str) -> String {
         "vllm" => "vllm/vllm-openai:latest".into(),
         "1cat-vllm" => "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5".into(),
         "sglang" => "lmsysorg/sglang:latest-cu129".into(),
-        "fastllm" => "docker.io/garenleeasa/ftllm:v0.1.8.1".into(),
+        // 华为云 SWR 国内镜像（ddn-k8s 同步 docker.io），国内直连可用；entrypoint 与原镜像一致
+        "fastllm" => "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm:v0.1.8.1".into(),
         _ => "ghcr.io/ggml-org/llama.cpp:server-cuda".into(),
     }
 }
@@ -1272,7 +1273,10 @@ mod tests {
         cfg.mode = "docker".into();
         let cmd = build_command(&cfg).unwrap();
         assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
-        assert!(cmd.contains("docker.io/garenleeasa/ftllm:v0.1.8.1"), "cmd: {cmd}");
+        assert!(
+            cmd.contains("swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm:v0.1.8.1"),
+            "cmd: {cmd}"
+        );
         assert!(cmd.contains("server '/mnt/m.gguf' --port 8080"), "cmd: {cmd}");
         assert!(cmd.contains("--kv_cache_dtype fp8_e4m3"), "cmd: {cmd}");
     }
@@ -1281,7 +1285,7 @@ mod tests {
     fn default_docker_image_fastllm() {
         assert_eq!(
             default_docker_image("fastllm"),
-            "docker.io/garenleeasa/ftllm:v0.1.8.1"
+            "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm:v0.1.8.1"
         );
     }
 
