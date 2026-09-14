@@ -317,3 +317,27 @@ export interface GpuQueryResult {
   procs: GpuProcRow[];
   topo: string | null;
 }
+
+export interface WslDistro {
+  name: string;
+  state: string;
+  version: number;
+  isDefault: boolean;
+  ip: string | null;
+}
+
+export interface WslFeatures {
+  wsl: boolean;
+  vmPlatform: boolean;
+}
+
+export interface WslCheckResult {
+  wslInstalled: boolean;
+  wslVersion: string | null;
+  defaultVersion: number | null;
+  defaultDistro: string | null;
+  distros: WslDistro[];
+  features: WslFeatures | null;
+  verdict: string;
+  hints: string[];
+}

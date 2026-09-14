@@ -4,6 +4,7 @@ mod envcheck;
 mod error;
 mod frameworks;
 mod gpumgmt;
+mod gpumini;
 mod initcheck;
 mod install;
 mod metrics;
@@ -12,6 +13,7 @@ mod models;
 mod profile;
 mod settings;
 mod ssh;
+mod wslcheck;
 
 use std::collections::HashMap;
 
@@ -96,7 +98,9 @@ pub fn run() {
             gpumgmt::gpu_query,
             gpumgmt::gpu_kill,
             gpumgmt::gpu_set_preview,
-            gpumgmt::gpu_set_start
+            gpumgmt::gpu_set_start,
+            gpumini::open_gpu_mini,
+            wslcheck::wsl_check
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

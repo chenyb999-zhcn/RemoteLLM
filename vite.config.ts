@@ -29,4 +29,14 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // 多入口：index.html 主窗口 + mini.html GPU 迷你仪表盘（独立 WebviewWindow）
+  build: {
+    rollupOptions: {
+      input: {
+        index: "index.html",
+        mini: "mini.html",
+      },
+    },
+  },
 }));

@@ -21,6 +21,8 @@ import {
   zhCN,
 } from "naive-ui";
 import { useI18n } from "vue-i18n";
+import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useRouter, useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import { useServerStore } from "./stores/server";
@@ -61,6 +63,11 @@ const listSep = computed(() => (settings.value.language === "en" ? ", " : "，")
 void startTaskBus();
 
 onMounted(async () => {
+  await refreshMiniState();
+  // 迷你窗被其自身关闭按钮/系统关闭 → 复位按钮状态
+  void listen("gpu-mini/closed", () => {
+    miniOpen.value = false;
+  });
   await store.loadProfiles();
   await settings.load();
   if (settings.value.autoConnect && settings.value.lastProfileId) {
@@ -84,12 +91,40 @@ watch(
     if (id) {
       dash.start();
       void onConnected(id);
+      // 迷你仪表盘跟随切换轮询目标
+      void WebviewWindow.getByLabel("gpu-mini").then((w) =>
+        w?.emit("gpu-mini/profile", { profileId: id })
+      );
     } else {
       dash.stop();
     }
   },
   { immediate: true },
 );
+
+// ---------- GPU 迷你仪表盘窗口 ----------
+const miniOpen = ref(false);
+
+async function refreshMiniState() {
+  miniOpen.value = (await WebviewWindow.getByLabel("gpu-mini")) != null;
+}
+
+function toggleMini() {
+  if (!currentId.value) return;
+  if (miniOpen.value) {
+    void WebviewWindow.getByLabel("gpu-mini").then((w) => w?.close());
+    miniOpen.value = false;
+    return;
+  }
+  void api
+    .openGpuMini(currentId.value)
+    .then(() => {
+      miniOpen.value = true;
+    })
+    .catch((e: any) => {
+      window.alert(t("app.connectFailed", { msg: e?.message ?? JSON.stringify(e) }));
+    });
+}
 
 // ---------- 登录后检查：先 Docker 服务，再下载工具 ----------
 let checkToken = 0;
@@ -336,6 +371,14 @@ async function onDisconnect() {
                 <n-tag v-if="connInfo" type="success" size="small">
                   {{ connInfo.user }}@{{ connInfo.host }}
                 </n-tag>
+                <n-button
+                  quaternary
+                  size="small"
+                  :type="miniOpen ? 'primary' : 'default'"
+                  @click="toggleMini"
+                >
+                  {{ t("app.miniDashboard") }}
+                </n-button>
                 <spin-button
                   quaternary
                   size="small"

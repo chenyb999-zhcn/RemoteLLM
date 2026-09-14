@@ -23,6 +23,7 @@ import type {
   StreamChunk,
   StreamDone,
   ToolsStatus,
+  WslCheckResult,
 } from "./types";
 
 export const api = {
@@ -48,6 +49,13 @@ export const api = {
   gpuProcPoll: (id: string) => invoke<ProcRow[]>("gpu_proc_poll", { id }),
   metricsPoll: (id: string, port: number) =>
     invoke<MetricSample[]>("metrics_poll", { id, port }),
+
+  // 打开/聚焦 GPU 迷你仪表盘（返回 true = 新建窗口）
+  openGpuMini: (profileId: string) =>
+    invoke<boolean>("open_gpu_mini", { profileId }),
+
+  // 本机 WSL2 一键检测（纯本地，不走 SSH）
+  wslCheck: () => invoke<WslCheckResult>("wsl_check"),
 
   listInstances: () => invoke<InstanceConfig[]>("list_instances"),
   saveInstance: (cfg: InstanceConfig) =>
