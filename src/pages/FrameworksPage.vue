@@ -798,7 +798,7 @@ const imageColumns = computed<DataTableColumns<ImageRow>>(() => [
             disabled: !!r.state || pulling.value || !canUseDocker.value,
             loading: pulling.value && pullImage.value === r.image,
             onClick: () => doPull(r.image),
-          }, { default: () => t("common.add") }),
+          }, { default: () => t("fw.pullBtn") }),
           ...(r.custom
             ? [h(NButton, {
                 size: "small",
@@ -1061,7 +1061,7 @@ function paramTooltip(p: ParamDef): string {
                 size="tiny"
                 @click="askInstall(c.nativeTool, c.label, 'install')"
               >
-                {{ t("fw.oneClickInstall") }}
+                {{ c.fw === "llama-cpp" ? t("fw.installSource") : t("fw.installPip") }}
               </n-button>
               <template v-else-if="c.nativeTool && c.installed">
                 <n-button size="tiny" @click="askInstall(c.nativeTool, c.label, 'upgrade')">

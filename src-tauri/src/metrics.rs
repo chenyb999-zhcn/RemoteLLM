@@ -159,11 +159,9 @@ fn parse_pmon(pmon_raw: &str, apps_raw: &str) -> Vec<ProcRow> {
 
 #[tauri::command]
 pub async fn gpu_poll(state: State<'_, crate::AppState>, id: String) -> Result<GpuPoll, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&id) else {
-        return Err(AppError::NotConnected(id));
-    };
-    let out = session.run(GPU_POLL_SCRIPT).await?;
+    // 只读（仪表盘轮询）：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &id)?;
+    let out = session.run(GPU_POLL_SCRIPT, true).await?;
     let raw = out.stdout.as_str();
     let (mem_total, mem_used) = section(raw, "MEM").map(parse_two_u64).unwrap_or((None, None));
     let (disk_total, disk_used) = section(raw, "DISK").map(parse_two_u64).unwrap_or((None, None));
@@ -181,11 +179,9 @@ pub async fn gpu_poll(state: State<'_, crate::AppState>, id: String) -> Result<G
 
 #[tauri::command]
 pub async fn gpu_proc_poll(state: State<'_, crate::AppState>, id: String) -> Result<Vec<ProcRow>, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&id) else {
-        return Err(AppError::NotConnected(id));
-    };
-    let out = session.run(PMON_SCRIPT).await?;
+    // 只读（仪表盘轮询）：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &id)?;
+    let out = session.run(PMON_SCRIPT, true).await?;
     let raw = out.stdout.as_str();
     let pmon = section(raw, "PMON").unwrap_or_default();
     let apps = section(raw, "APPS").unwrap_or_default();
@@ -199,14 +195,12 @@ pub async fn metrics_poll(
     id: String,
     port: u16,
 ) -> Result<Vec<crate::metrics_parse::MetricSample>, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&id) else {
-        return Err(AppError::NotConnected(id));
-    };
+    // 只读（仪表盘轮询）：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &id)?;
     let cmd = format!(
         "curl -s --max-time 5 -w '\\n%{{http_code}}' http://localhost:{port}/metrics"
     );
-    let out = session.run(&cmd).await?;
+    let out = session.run(&cmd, true).await?;
     let stdout = out.stdout.as_str();
     let (body, status) = match stdout.rfind('\n') {
         Some(i) => (&stdout[..i], &stdout[i + 1..]),

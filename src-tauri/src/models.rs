@@ -142,16 +142,16 @@ fn get_profile(app: &AppHandle, profile_id: &str) -> Result<ServerProfile, AppEr
         .ok_or_else(|| AppError::Other(format!("服务器档案不存在: {profile_id}")))
 }
 
+/// 在指定档案上执行命令。read_only=true 走读锁（只读命令互相并发），
+/// false 走写锁（变更独占）。
 async fn run_on(
     state: &State<'_, crate::AppState>,
     profile_id: &str,
     cmd: &str,
+    read_only: bool,
 ) -> Result<crate::ssh::CmdOutput, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(profile_id) else {
-        return Err(AppError::NotConnected(profile_id.to_string()));
-    };
-    Ok(session.run(cmd).await?)
+    let session = crate::ssh::session_from(state, profile_id)?;
+    Ok(session.run(cmd, read_only).await?)
 }
 
 #[tauri::command]
@@ -921,7 +921,8 @@ pub async fn list_local_models(
     // 合并缓存的解析元数据直接返回，应用重启后同样秒开
     let light = format!("mkdir -p {} 2>/dev/null\npython3 - \"{}\" light <<'RLPY'\n{}\nRLPY", dir, dir, LIST_MODELS_PY);
     let mut fp: Option<String> = None;
-    if let Ok(out) = run_on(&state, &profile_id, &light).await {
+    // 只读（扫描；mkdir -p 为幂等守卫，可安全并发）
+    if let Ok(out) = run_on(&state, &profile_id, &light, true).await {
         if out.exit_code == 2 {
             let msg = out.stderr.trim();
             let path = msg.strip_prefix("MODELS_DIR_MISSING").unwrap_or(msg).trim();
@@ -971,7 +972,7 @@ pub async fn list_local_models(
 
     // 第二步：全量扫描（解析 GGUF/safetensors 头部，较慢）并更新缓存（内存 + 持久化）
     let script = format!("mkdir -p {} 2>/dev/null\npython3 - \"{}\" <<'RLPY'\n{}\nRLPY", dir, dir, LIST_MODELS_PY);
-    let out = run_on(&state, &profile_id, &script).await?;
+    let out = run_on(&state, &profile_id, &script, true).await?;
     if out.exit_code == 2 {
         let msg = out.stderr.trim();
         let path = msg.strip_prefix("MODELS_DIR_MISSING").unwrap_or(msg).trim();
@@ -1025,16 +1026,15 @@ pub async fn check_download_tools(
     state: State<'_, crate::AppState>,
     profile_id: String,
 ) -> Result<ToolsStatus, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
+    let session = crate::ssh::session_from(&state, &profile_id)?;
+    // 只读：读锁，与其它只读命令并发
     let out = session
         .run(
             "{ command -v modelscope >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/modelscope\" ]; } \
              && echo MS_OK || echo MS_MISSING; \
              { command -v huggingface-cli >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/huggingface-cli\" ]; } \
              && echo HF_OK || echo HF_MISSING",
+            true,
         )
         .await?;
     let s = out.stdout.as_str();
@@ -1056,6 +1056,7 @@ pub async fn check_parser_libs(
         "python3 -c \"import importlib.util as u; \
          print('GGUF_OK' if u.find_spec('gguf') else 'GGUF_NO'); \
          print('ST_OK' if u.find_spec('safetensors') else 'ST_NO')\"",
+        true,
     )
     .await?;
     let s = out.stdout.as_str();
@@ -1164,7 +1165,8 @@ pub async fn model_download_start(
         "{ command -v huggingface-cli >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/huggingface-cli\" ]; } \
          && echo OK || echo MISSING"
     };
-    let out = run_on(&state, &profile_id, check).await?;
+    // 只读（检查 CLI 是否存在）：读锁，与其它只读命令并发
+    let out = run_on(&state, &profile_id, check, true).await?;
     if out.stdout.contains("MISSING") {
         let need = if source == "modelscope" { "modelscope" } else { "huggingface_hub[cli]" };
         return Err(AppError::Other(format!(
@@ -1192,7 +1194,7 @@ pub async fn model_download_start(
         files.as_deref().unwrap_or(&[]),
         &crate::profile::proxy_env_prefix(&profile, &settings),
     )?;
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     crate::applog::info(
@@ -1201,7 +1203,7 @@ pub async fn model_download_start(
             "model_download profile={profile_id} source={source} model={model_id} dest={dest}"
         ),
     );
-    crate::ssh::SshSession::spawn_stream(app, profile_id, cmd, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, cmd, task_id.clone(), false);
     Ok(task_id)
 }
 
@@ -1250,7 +1252,8 @@ pub async fn model_delete(
     let base = crate::profile::effective_models_dir(&profile, &settings);
     let cmd = delete_command(&base, &rel);
     crate::applog::info("task", &format!("model_delete profile={profile_id} rel={rel}"));
-    let out = run_on(&state, &profile_id, &cmd).await?;
+    // 变更（删除文件）：写锁独占
+    let out = run_on(&state, &profile_id, &cmd, false).await?;
     Ok(out.stdout.trim().to_string())
 }
 

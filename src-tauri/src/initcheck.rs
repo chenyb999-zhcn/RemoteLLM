@@ -61,8 +61,9 @@ const CUDA_LIBS_APT: &[&str] =
     &["cublas", "cufft", "cusolver", "cusparse", "curand", "npp", "nvjpeg", "nvcomp"];
 
 /// 一次 SSH 拿全部初始化信号（分节输出，section 解析与 docker.rs/envcheck.rs 相同约定）
-fn init_script(base_dir: &str) -> String {
-    let fw_dir = format!("{}/frameworks", base_dir.trim_end_matches('/'));
+/// fw_dir 为框架安装根目录（profile.frameworks_dir()，已做 ~ → $HOME 归一化，
+/// 双引号内也能被 shell 展开）——不再写死 $HOME/RemoteLLM，自定义 baseDir 也能探测到
+fn init_script(fw_dir: &str) -> String {
     format!(
         r#"
 echo "==SYS=="
@@ -108,8 +109,8 @@ echo "==VLLM=="
 # vLLM 装在 3.12 venv 里（一键安装）；先查 PATH 上的 vllm，再回退到 venv 的 vllm 二进制
 _v=""
 command -v vllm >/dev/null 2>&1 && _v=$(vllm --version 2>/dev/null | head -1)
-if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm" ]; then
-  _v=$("$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm" --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "{fw_dir}/vllm-venv/bin/vllm" ]; then
+  _v=$("{fw_dir}/vllm-venv/bin/vllm" --version 2>/dev/null | head -1)
 fi
 _p=$(python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/null)
 [ -n "$_v" ] && echo "$_v"
@@ -120,14 +121,14 @@ _v=""
 # 1Cat-vLLM 预编译 wheel 装的是 `vllm` 入口，且跑在 3.12 venv 里；
 # 先查 PATH 上的 1cat-vllm，再回退到 venv 的 vllm 二进制
 if command -v 1cat-vllm >/dev/null 2>&1; then _v=$(1cat-vllm --version 2>/dev/null | head -1); fi
-if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" ]; then
-  _v=$("$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "{fw_dir}/1cat-venv/bin/vllm" ]; then
+  _v=$("{fw_dir}/1cat-venv/bin/vllm" --version 2>/dev/null | head -1)
 fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 echo "==SGLANG=="
 # sglang 装在 3.12 venv 里（系统 python3 是 3.14，import 即崩），优先查 venv
-_p=$("$HOME/RemoteLLM/frameworks/sglang-venv/bin/python" -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+_p=$("{fw_dir}/sglang-venv/bin/python" -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
 [ -z "$_p" ] && _p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
 [ -n "$_p" ] && echo "$_p"
 [ -z "$_p" ] && echo NONE
@@ -143,7 +144,7 @@ echo "==CUDALIBS=="
 # （nvidia-*-cu12 系列 / tensorrt-llm，系统 python3 + 引擎 venv）
 _dpkg=$(dpkg -l 2>/dev/null | awk '/^ii/ {{print $2" "$3}}')
 _pips=""
-for P in python3 "$HOME/RemoteLLM/frameworks/vllm-venv/bin/python" "$HOME/RemoteLLM/frameworks/1cat-venv/bin/python" "$HOME/RemoteLLM/frameworks/sglang-venv/bin/python" "$HOME/RemoteLLM/frameworks/ftllm-venv/bin/python"; do
+for P in python3 "{fw_dir}/vllm-venv/bin/python" "{fw_dir}/1cat-venv/bin/python" "{fw_dir}/sglang-venv/bin/python" "{fw_dir}/ftllm-venv/bin/python"; do
   if [ "$P" = "python3" ]; then command -v python3 >/dev/null 2>&1 || continue; else [ -x "$P" ] || continue; fi
   _pips="$_pips
 $("$P" -m pip list --format=freeze 2>/dev/null)"
@@ -913,13 +914,11 @@ pub async fn server_init_check(
         .onecat_image
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "ghcr.io/chenyb999-zhcn/1cat-vllm".into());
+        .unwrap_or_else(|| "docker.io/sssssks/1cat-vllm".into());
 
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
-    let out = session.run(&init_script(&profile.base_dir)).await?;
+    // 只读（初始化检查，无副作用）：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &profile_id)?;
+    let out = session.run(&init_script(&profile.frameworks_dir()), true).await?;
     let signals = parse_signals(&out.stdout);
     let proxy = crate::profile::effective_proxy(&profile, &settings);
     Ok(summarize(build_items(&signals, proxy.as_deref(), &default_img)))
@@ -998,7 +997,7 @@ pub async fn apt_install_start(
     }
     let settings = crate::settings::load_settings(&app)?;
     let script = build_apt_script(mode, password.as_deref(), &pkgs, &settings.deb_mirror)?;
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("apt-{}", chrono::Utc::now().timestamp_millis());
@@ -1006,7 +1005,7 @@ pub async fn apt_install_start(
         "task",
         &format!("apt_install profile={profile_id} pkgs={}", pkgs.join(",")),
     );
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 
@@ -1018,10 +1017,19 @@ mod tests {
     fn init_script_renders_json_runtimes() {
         // 脚本经 format! 渲染（{{{{ }}}），任何单花括号会在此 panic；
         // 同时锁定 json 模板（裸 {{.Runtimes}} 输出 Go map 无引号，grep '"nvidia"' 永远不中）
-        let s = init_script("~/RemoteLLM");
+        let s = init_script("$HOME/RemoteLLM/frameworks");
         assert!(s.contains(
             r#"docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"' && echo RT_OK || true"#
         ));
+    }
+
+    #[test]
+    fn init_script_uses_profile_frameworks_dir() {
+        // 框架根目录必须按档案注入（不再写死 $HOME/RemoteLLM，自定义 baseDir 也能探测到）
+        let s = init_script("/data/llm/frameworks");
+        assert!(s.contains("find \"/data/llm/frameworks\" -maxdepth 4"));
+        assert!(s.contains("\"/data/llm/frameworks/vllm-venv/bin/vllm\""));
+        assert!(!s.contains("RemoteLLM"));
     }
 
     const RAW_Z420: &str = "\

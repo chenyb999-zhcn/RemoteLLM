@@ -146,8 +146,9 @@ fn parse_disks(s: &str) -> Vec<DiskInfo> {
         .collect()
 }
 
-pub async fn env_check(session: &mut SshSession) -> Result<EnvInfo, AppError> {
-    let out = session.run(ENV_SCRIPT).await?;
+pub async fn env_check(session: &SshSession) -> Result<EnvInfo, AppError> {
+    // 只读：读锁，与其它只读命令并发
+    let out = session.run(ENV_SCRIPT, true).await?;
     let raw = out.stdout.as_str();
 
     let (os, kernel) = section(raw, "OS")
@@ -206,11 +207,8 @@ pub async fn env_check_cmd(
     state: State<'_, crate::AppState>,
     id: String,
 ) -> Result<EnvInfo, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&id) else {
-        return Err(AppError::NotConnected(id));
-    };
-    env_check(session).await
+    let session = crate::ssh::session_from(&state, &id)?;
+    env_check(&session).await
 }
 
 #[cfg(test)]

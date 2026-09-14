@@ -535,12 +535,9 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
     match cfg.framework.as_str() {
         "vllm" | "1cat-vllm" => {
             // 官方镜像 vllm/vllm-openai 的 entrypoint 即 ["vllm","serve"]，模型是位置参数；
-            // 1cat-vllm 镜像 entrypoint 是 NGC 包装（exec 命令），须显式写 `vllm serve`
-            if cfg.framework == "1cat-vllm" {
-                run.push(format!("vllm serve {}", m));
-            } else {
-                run.push(m.clone());
-            }
+            // 1cat-vllm 新镜像 (sssssks) entrypoint 是 lazy-deps 包装，自身 `exec ... serve "$@"`，
+            // 故模型同样作位置参数直接传，不再写 `vllm serve` 前缀（仅旧 NGC 镜像才需要）
+            run.push(m.clone());
             run.push(format!("--port {}", cfg.port));
             run.push(format!("--tensor-parallel-size {}", pnum(p, "tp", 1)));
             push_vllm_common(p, &mut run);
@@ -603,7 +600,7 @@ fn docker_command(cfg: &InstanceConfig, m: String) -> Result<String, AppError> {
 fn default_docker_image(fw: &str) -> String {
     match fw {
         "vllm" => "vllm/vllm-openai:latest".into(),
-        "1cat-vllm" => "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5".into(),
+        "1cat-vllm" => "docker.io/sssssks/1cat-vllm:latest".into(),
         "sglang" => "lmsysorg/sglang:latest-cu129".into(),
         // 华为云 SWR 国内镜像（ddn-k8s 同步 docker.io），国内直连可用；entrypoint 与原镜像一致
         "fastllm" => "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/garenleeasa/ftllm:v0.1.8.1".into(),
@@ -647,24 +644,22 @@ async fn get_instance(
         .into_iter()
         .find(|p| p.id == inst.profile_id)
         .ok_or_else(|| AppError::Other("服务器档案不存在".into()))?;
-    let conns = state.conns.lock().await;
-    if !conns.contains_key(&profile.id) {
+    if !crate::ssh::is_connected(state, &profile.id) {
         return Err(AppError::NotConnected(profile.id.clone()));
     }
-    drop(conns);
     Ok((inst, profile))
 }
 
+/// 在指定档案上执行命令并返回 stdout。read_only=true 走读锁（只读命令互相并发），
+/// false 走写锁（变更独占）。
 async fn run_on(
     state: &State<'_, crate::AppState>,
     profile_id: &str,
     cmd: &str,
+    read_only: bool,
 ) -> Result<String, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(profile_id) else {
-        return Err(AppError::NotConnected(profile_id.to_string()));
-    };
-    let out = session.run(cmd).await?;
+    let session = crate::ssh::session_from(state, profile_id)?;
+    let out = session.run(cmd, read_only).await?;
     Ok(out.stdout)
 }
 
@@ -693,13 +688,16 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<Vec<InstanceC
     Ok(list)
 }
 
-const DETECT_SCRIPT: &str = r#"
+/// 框架探测脚本（只读）。fw_dir 为框架安装根目录（profile.baseDir/frameworks），
+/// 由调用方按档案的 base_dir 传入——不再写死 $HOME/RemoteLLM，自定义 baseDir 也能探测到
+fn detect_script(fw_dir: &str) -> String {
+    r#"
 echo "==VLLM=="
 # vLLM 装在 3.12 venv 里（一键安装）；先查 PATH 上的 vllm，再回退到 venv 的 vllm 二进制
 _v=""
 command -v vllm >/dev/null 2>&1 && _v=$(vllm --version 2>/dev/null | head -1)
-if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm" ]; then
-  _v=$("$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm" --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "__FW_DIR__/vllm-venv/bin/vllm" ]; then
+  _v=$("__FW_DIR__/vllm-venv/bin/vllm" --version 2>/dev/null | head -1)
 fi
 _p=$(python3 -c "import vllm; print('python-vllm', vllm.__version__)" 2>/dev/null)
 [ -n "$_v" ] && echo "$_v"
@@ -710,21 +708,21 @@ _v=""
 # 1Cat-vLLM 预编译 wheel 装的是 `vllm` 入口，且跑在 3.12 venv 里；
 # 先查 PATH 上的 1cat-vllm/vllm，再回退到 venv 的 vllm 二进制
 if command -v 1cat-vllm >/dev/null 2>&1; then _v=$(1cat-vllm --version 2>/dev/null | head -1); fi
-if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" ]; then
-  _v=$("$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm" --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "__FW_DIR__/1cat-venv/bin/vllm" ]; then
+  _v=$("__FW_DIR__/1cat-venv/bin/vllm" --version 2>/dev/null | head -1)
 fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 echo "==SGLANG=="
 # sglang 装在 3.12 venv 里（系统 python3 是 3.14，import 即崩），优先查 venv
-_p=$("$HOME/RemoteLLM/frameworks/sglang-venv/bin/python" -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
+_p=$("__FW_DIR__/sglang-venv/bin/python" -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
 [ -z "$_p" ] && _p=$(python3 -c "import sglang; print('sglang', sglang.__version__)" 2>/dev/null)
 [ -n "$_p" ] && echo "$_p"
 [ -z "$_p" ] && echo NONE
 echo "==LLAMA=="
 _v=""
 command -v llama-server >/dev/null 2>&1 && _v=$(llama-server --version 2>&1 | head -1)
-_f=$(find "$HOME/RemoteLLM/frameworks" -maxdepth 4 -name llama-server -type f 2>/dev/null | head -1)
+_f=$(find "__FW_DIR__" -maxdepth 4 -name llama-server -type f 2>/dev/null | head -1)
 if [ -z "$_v" ] && [ -n "$_f" ]; then _v=$("$_f" --version 2>&1 | head -1); fi
 [ -n "$_v" ] && echo "$_v"
 if [ -n "$_f" ]; then
@@ -736,13 +734,15 @@ echo "==FASTLLM=="
 # ftllm 装在 3.12 venv 里（一键安装）；先查 PATH，再回退到 venv 的 ftllm 二进制
 _v=""
 command -v ftllm >/dev/null 2>&1 && _v=$(ftllm --version 2>/dev/null | head -1)
-if [ -z "$_v" ] && [ -x "$HOME/RemoteLLM/frameworks/ftllm-venv/bin/ftllm" ]; then
-  _v=$("$HOME/RemoteLLM/frameworks/ftllm-venv/bin/ftllm" --version 2>/dev/null | head -1)
+if [ -z "$_v" ] && [ -x "__FW_DIR__/ftllm-venv/bin/ftllm" ]; then
+  _v=$("__FW_DIR__/ftllm-venv/bin/ftllm" --version 2>/dev/null | head -1)
 fi
 [ -n "$_v" ] && echo "$_v"
 [ -z "$_v" ] && echo NONE
 exit 0
-"#;
+"#
+    .replace("__FW_DIR__", fw_dir)
+}
 
 const DETECT_FRAMEWORKS: [(&str, &str); 5] = [
     ("vllm", "VLLM"),
@@ -752,7 +752,7 @@ const DETECT_FRAMEWORKS: [(&str, &str); 5] = [
     ("fastllm", "FASTLLM"),
 ];
 
-/// 解析 DETECT_SCRIPT 输出（每段空时输出 NONE，避免把下一段标记当内容）
+/// 解析 detect_script 输出（每段空时输出 NONE，避免把下一段标记当内容）
 pub fn parse_detect(raw: &str) -> Vec<FwDetect> {
     let mut result = Vec::new();
     for (fw, marker) in DETECT_FRAMEWORKS {
@@ -780,10 +780,17 @@ pub fn parse_detect(raw: &str) -> Vec<FwDetect> {
 
 #[tauri::command]
 pub async fn detect_frameworks(
+    app: AppHandle,
     state: State<'_, crate::AppState>,
     profile_id: String,
 ) -> Result<Vec<FwDetect>, AppError> {
-    let out = run_on(&state, &profile_id, DETECT_SCRIPT).await?;
+    let profile = crate::profile::load_profiles(&app)?
+        .into_iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| AppError::Other(format!("服务器档案不存在: {profile_id}")))?;
+    let script = detect_script(&profile.frameworks_dir());
+    // 只读（探测，无副作用）：读锁，与其它只读命令并发
+    let out = run_on(&state, &profile_id, &script, true).await?;
     Ok(parse_detect(&out))
 }
 
@@ -812,9 +819,21 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
     let portcheck = port_busy_check(cfg.port);
 
     if cfg.mode == "docker" {
-        let cmd = build_command(cfg).unwrap_or_default();
+        let mut cmd = build_command(cfg).unwrap_or_default();
+        // WSL2 无 pinned memory/UVA，而 vllm/1cat 的 V2 model runner 依赖 UVA 会必崩
+        // （RuntimeError: UVA is not available）；检测到 WSL2 时强制 V1 runner（docker -e 注入环境变量）
+        let mut wsl_prelude = String::new();
+        if cfg.framework == "vllm" || cfg.framework == "1cat-vllm" {
+            wsl_prelude = String::from(
+                "wsl_vllm_env=\"\"\n\
+                 grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null && wsl_vllm_env=\"-e VLLM_USE_V2_MODEL_RUNNER=0\"\n",
+            );
+            // 紧跟 "docker run -d" 之后插入环境变量（非 WSL2 时该变量为空，无副作用）
+            cmd = cmd.replacen("docker run -d", "docker run -d $wsl_vllm_env", 1);
+        }
         return format!(
             "{portcheck}\n\
+             {wsl_prelude}\
              docker ps -a --format '{{{{.Names}}}}' | grep -qx {s} && docker rm -f {s} >/dev/null 2>&1\n\
              {cmd}\necho \"DOCKER_STARTED\"",
         );
@@ -827,13 +846,13 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
         let bin = pstr(&cfg.params, "bin", "llama-server");
         if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
             let fw_bin = format!(
-                "{}/frameworks/llama.cpp/build/bin/{}",
-                profile.base_dir.trim_end_matches('/'),
+                "{}/llama.cpp/build/bin/{}",
+                profile.frameworks_dir(),
                 bin
             );
             prelude = format!(
                 "llama_bin=$(command -v {bin} 2>/dev/null)\n\
-                 [ -z \"$llama_bin\" ] && [ -x {fw_bin} ] && llama_bin={fw_bin}\n\
+                 [ -z \"$llama_bin\" ] && [ -x \"{fw_bin}\" ] && llama_bin=\"{fw_bin}\"\n\
                  [ -z \"$llama_bin\" ] && llama_bin={bin}\n"
             );
             cmd = format!("\"$llama_bin\"{}", &cmd[bin.len()..]);
@@ -845,17 +864,21 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
         let bin = pstr(&cfg.params, "bin", "vllm");
         if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
             let venv_bin = format!(
-                "{}/frameworks/vllm-venv/bin/{}",
-                profile.base_dir.trim_end_matches('/'),
+                "{}/vllm-venv/bin/{}",
+                profile.frameworks_dir(),
                 bin
             );
             prelude = format!(
                 "vllm_bin=$(command -v {bin} 2>/dev/null)\n\
-                 [ -z \"$vllm_bin\" ] && [ -x {venv_bin} ] && vllm_bin={venv_bin}\n\
+                 [ -z \"$vllm_bin\" ] && [ -x \"{venv_bin}\" ] && vllm_bin=\"{venv_bin}\"\n\
                  [ -z \"$vllm_bin\" ] && vllm_bin={bin}\n"
             );
             cmd = format!("\"$vllm_bin\"{}", &cmd[bin.len()..]);
         }
+        // WSL2 无 pinned memory/UVA，vllm 的 V2 model runner 依赖 UVA 会必崩；检测到 WSL2 时强制 V1 runner
+        prelude = format!(
+            "{prelude}grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null && export VLLM_USE_V2_MODEL_RUNNER=0\n"
+        );
     }
     // 1Cat-vLLM 装在 3.12 venv 里（系统 python3 是 3.14，跑不了 1Cat），
     // 裸命令名不在 PATH 时回退到 venv 的 vllm 二进制
@@ -863,28 +886,32 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
         let bin = pstr(&cfg.params, "bin", "vllm");
         if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
             let venv_bin = format!(
-                "{}/frameworks/1cat-venv/bin/{}",
-                profile.base_dir.trim_end_matches('/'),
+                "{}/1cat-venv/bin/{}",
+                profile.frameworks_dir(),
                 bin
             );
             prelude = format!(
                 "cat_bin=$(command -v {bin} 2>/dev/null)\n\
-                 [ -z \"$cat_bin\" ] && [ -x {venv_bin} ] && cat_bin={venv_bin}\n\
+                 [ -z \"$cat_bin\" ] && [ -x \"{venv_bin}\" ] && cat_bin=\"{venv_bin}\"\n\
                  [ -z \"$cat_bin\" ] && cat_bin={bin}\n"
             );
             cmd = format!("\"$cat_bin\"{}", &cmd[bin.len()..]);
         }
+        // WSL2 无 pinned memory/UVA，1Cat(vllm) 的 V2 model runner 依赖 UVA 会必崩；检测到 WSL2 时强制 V1 runner
+        prelude = format!(
+            "{prelude}grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null && export VLLM_USE_V2_MODEL_RUNNER=0\n"
+        );
     }
     // sglang 装在 3.12 venv 里（系统 python3 是 3.14，torch.compile 不支持 3.14，
     // sglang import 即崩）。命令以 `sglang_py` 开头时回退到 venv 的 python。
     if cfg.framework == "sglang" && cmd.starts_with("sglang_py ") {
         let venv_py = format!(
-            "{}/frameworks/sglang-venv/bin/python",
-            profile.base_dir.trim_end_matches('/')
+            "{}/sglang-venv/bin/python",
+            profile.frameworks_dir()
         );
         prelude = format!(
             "sglang_py=$(command -v python3 2>/dev/null)\n\
-              [ -x {venv_py} ] && sglang_py={venv_py}\n"
+              [ -x \"{venv_py}\" ] && sglang_py=\"{venv_py}\"\n"
         );
         cmd = format!("\"$sglang_py\"{}", &cmd["sglang_py".len()..]);
     }
@@ -893,13 +920,13 @@ fn start_script(cfg: &InstanceConfig, profile: &crate::profile::ServerProfile) -
         let bin = pstr(&cfg.params, "bin", "ftllm");
         if !bin.is_empty() && !bin.contains('/') && cmd.starts_with(bin.as_str()) {
             let venv_bin = format!(
-                "{}/frameworks/ftllm-venv/bin/{}",
-                profile.base_dir.trim_end_matches('/'),
+                "{}/ftllm-venv/bin/{}",
+                profile.frameworks_dir(),
                 bin
             );
             prelude = format!(
                 "ftllm_bin=$(command -v {bin} 2>/dev/null)\n\
-                  [ -z \"$ftllm_bin\" ] && [ -x {venv_bin} ] && ftllm_bin={venv_bin}\n\
+                  [ -z \"$ftllm_bin\" ] && [ -x \"{venv_bin}\" ] && ftllm_bin=\"{venv_bin}\"\n\
                   [ -z \"$ftllm_bin\" ] && ftllm_bin={bin}\n"
             );
             cmd = format!("\"$ftllm_bin\"{}", &cmd[bin.len()..]);
@@ -965,7 +992,8 @@ pub async fn instance_start(
 ) -> Result<String, AppError> {
     let (inst, profile) = get_instance(&app, &state, &id).await?;
     let script = start_script(&inst, &profile);
-    let out = run_on(&state, &profile.id, &script).await?;
+    // 变更（启动进程）：写锁独占
+    let out = run_on(&state, &profile.id, &script, false).await?;
     let out = out.trim().to_string();
     // 同名实例已在运行：友好提示（非错误，进程本就健康）
     if out.contains("ALREADY_RUNNING") {
@@ -994,7 +1022,8 @@ pub async fn instance_stop(
 ) -> Result<String, AppError> {
     let (inst, profile) = get_instance(&app, &state, &id).await?;
     let script = stop_script(&inst, &profile);
-    let out = run_on(&state, &profile.id, &script).await?;
+    // 变更（停止进程）：写锁独占
+    let out = run_on(&state, &profile.id, &script, false).await?;
     Ok(out.trim().to_string())
 }
 
@@ -1006,7 +1035,8 @@ pub async fn instance_status(
 ) -> Result<InstanceStatus, AppError> {
     let (inst, profile) = get_instance(&app, &state, &id).await?;
     let script = status_script(&inst, &profile);
-    let out = run_on(&state, &profile.id, &script).await?;
+    // 只读（状态探测）：读锁，与其它只读命令并发
+    let out = run_on(&state, &profile.id, &script, true).await?;
     let mut running = false;
     let mut pid: Option<u32> = None;
     let mut health_code: Option<u16> = None;
@@ -1050,7 +1080,8 @@ pub async fn instance_logs(
         l = log,
         n = lines
     );
-    Ok(run_on(&state, &profile.id, &cmd).await?)
+    // 只读（tail 日志）：读锁，与其它只读命令并发
+    Ok(run_on(&state, &profile.id, &cmd, true).await?)
 }
 
 /// 日志文件总行数（用于判断是否已加载到开头）
@@ -1064,7 +1095,8 @@ pub async fn instance_log_total_lines(
     let s = slug(&inst.name);
     let log = format!("{}/{}.log", profile.logs_dir(), s);
     let cmd = format!("wc -l < \"{l}\" 2>/dev/null || echo 0", l = log);
-    let out = run_on(&state, &profile.id, &cmd).await?;
+    // 只读（wc -l）：读锁，与其它只读命令并发
+    let out = run_on(&state, &profile.id, &cmd, true).await?;
     Ok(out.trim().parse().unwrap_or(0))
 }
 
@@ -1296,7 +1328,7 @@ mod tests {
         cfg.mode = "native".into();
         let s = start_script(&cfg, &test_profile());
         assert!(s.contains("ftllm_bin=$(command -v ftllm"), "script: {s}");
-        assert!(s.contains("~/RemoteLLM/frameworks/ftllm-venv/bin/ftllm"), "script: {s}");
+        assert!(s.contains("$HOME/RemoteLLM/frameworks/ftllm-venv/bin/ftllm"), "script: {s}");
         assert!(s.contains("nohup \"$ftllm_bin\" server"), "script: {s}");
 
         // bin 为绝对路径时不注入回退
@@ -1366,13 +1398,15 @@ mod tests {
 
     #[test]
     fn build_command_1cat_docker() {
-        // 1cat 镜像 entrypoint 是 NGC 包装：须显式 `vllm serve`，模型位置参数
+        // 1cat 新镜像 entrypoint 是 lazy-deps 包装（自身 exec ... serve "$@"）：
+        // 模型位置参数直接传，不带 `vllm serve` 前缀
         let mut cfg = test_cfg_fw("1cat-vllm", serde_json::json!({ "tp": 1 }));
         cfg.mode = "docker".into();
         let cmd = build_command(&cfg).unwrap();
         assert!(cmd.starts_with("docker run -d"), "cmd: {cmd}");
-        assert!(cmd.contains("ghcr.io/chenyb999-zhcn/1cat-vllm:1.5"), "cmd: {cmd}");
-        assert!(cmd.contains("vllm serve '/mnt/m.gguf' --port 8080"), "cmd: {cmd}");
+        assert!(cmd.contains("docker.io/sssssks/1cat-vllm:latest"), "cmd: {cmd}");
+        assert!(cmd.contains("'/mnt/m.gguf' --port 8080"), "cmd: {cmd}");
+        assert!(!cmd.contains("vllm serve"), "cmd 不应含 vllm serve 前缀: {cmd}");
         assert!(!cmd.contains("--model "), "cmd: {cmd}");
     }
 
@@ -1577,6 +1611,7 @@ mod tests {
             }),
         );
         let cmd = build_command(&cfg).unwrap();
+        // native 模式：1cat 用 venv 的 vllm 二进制，仍为 `vllm serve <model>`
         for flag in [
             "vllm serve '/mnt/m.gguf'",
             "--port 8080",
@@ -1660,7 +1695,7 @@ mod tests {
         cfg.mode = "native".into();
         let s = start_script(&cfg, &test_profile());
         assert!(s.contains("llama_bin=$(command -v llama-server"), "script: {s}");
-        assert!(s.contains("~/RemoteLLM/frameworks/llama.cpp/build/bin/llama-server"), "script: {s}");
+        assert!(s.contains("$HOME/RemoteLLM/frameworks/llama.cpp/build/bin/llama-server"), "script: {s}");
         assert!(s.contains("nohup \"$llama_bin\" -m"), "script: {s}");
 
         // bin 含路径（用户自定义）时不注入解析
@@ -1678,7 +1713,7 @@ mod tests {
         cfg.mode = "native".into();
         let s = start_script(&cfg, &test_profile());
         assert!(s.contains("vllm_bin=$(command -v vllm"), "script: {s}");
-        assert!(s.contains("~/RemoteLLM/frameworks/vllm-venv/bin/vllm"), "script: {s}");
+        assert!(s.contains("$HOME/RemoteLLM/frameworks/vllm-venv/bin/vllm"), "script: {s}");
         assert!(s.contains("nohup \"$vllm_bin\" serve"), "script: {s}");
 
         // bin 含路径时不注入解析
@@ -1696,7 +1731,7 @@ mod tests {
         cfg.mode = "native".into();
         let s = start_script(&cfg, &test_profile());
         assert!(s.contains("cat_bin=$(command -v vllm"), "script: {s}");
-        assert!(s.contains("~/RemoteLLM/frameworks/1cat-venv/bin/vllm"), "script: {s}");
+        assert!(s.contains("$HOME/RemoteLLM/frameworks/1cat-venv/bin/vllm"), "script: {s}");
         assert!(s.contains("nohup \"$cat_bin\" serve"), "script: {s}");
 
         // bin 含路径时不注入解析
@@ -1715,7 +1750,7 @@ mod tests {
         cfg.mode = "native".into();
         let s = start_script(&cfg, &test_profile());
         assert!(s.contains("sglang_py=$(command -v python3"), "script: {s}");
-        assert!(s.contains("~/RemoteLLM/frameworks/sglang-venv/bin/python"), "script: {s}");
+        assert!(s.contains("$HOME/RemoteLLM/frameworks/sglang-venv/bin/python"), "script: {s}");
         assert!(s.contains("nohup \"$sglang_py\" -m sglang.launch_server"), "script: {s}");
     }
 
@@ -1753,5 +1788,72 @@ mod tests {
         let s = start_script(&cfg, &test_profile());
         assert!(s.contains("PORT_BUSY 9999"), "script: {s}");
         assert!(s.contains("dev/tcp/127.0.0.1/9999"), "script: {s}");
+    }
+
+    #[test]
+    fn start_script_wsl2_vllm_docker_injects_v1_runner_env() {
+        // WSL2 无 pinned memory/UVA，vllm V2 model runner 会崩；docker 模式检测到 WSL2 时
+        // 通过 -e 注入 VLLM_USE_V2_MODEL_RUNNER=0 强制 V1 runner
+        let mut cfg = test_cfg_fw("vllm", serde_json::json!({}));
+        cfg.mode = "docker".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("wsl_vllm_env=\"\""), "script: {s}");
+        assert!(s.contains("grep -qiE 'microsoft|wsl' /proc/version"), "script: {s}");
+        assert!(s.contains("VLLM_USE_V2_MODEL_RUNNER=0"), "script: {s}");
+        // 环境变量紧跟 docker run -d 之后
+        assert!(s.contains("docker run -d $wsl_vllm_env"), "script: {s}");
+        // 检测在前、docker run 在后
+        assert!(
+            s.find("wsl_vllm_env=").unwrap() < s.find("docker run -d").unwrap(),
+            "WSL2 检测应在 docker run 之前: {s}"
+        );
+    }
+
+    #[test]
+    fn start_script_wsl2_onecat_docker_injects_v1_runner_env() {
+        // 1Cat-vLLM 同样基于 vllm，docker 模式也需注入 V1 runner 环境变量
+        let mut cfg = test_cfg_fw("1cat-vllm", serde_json::json!({}));
+        cfg.mode = "docker".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("VLLM_USE_V2_MODEL_RUNNER=0"), "script: {s}");
+        assert!(s.contains("docker run -d $wsl_vllm_env"), "script: {s}");
+    }
+
+    #[test]
+    fn start_script_wsl2_vllm_native_exports_v1_runner_env() {
+        // native 模式：检测到 WSL2 时 export VLLM_USE_V2_MODEL_RUNNER=0（在 nohup 之前）
+        let mut cfg = test_cfg_fw("vllm", serde_json::json!({}));
+        cfg.mode = "native".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("grep -qiE 'microsoft|wsl' /proc/version"), "script: {s}");
+        assert!(s.contains("export VLLM_USE_V2_MODEL_RUNNER=0"), "script: {s}");
+        assert!(
+            s.find("VLLM_USE_V2_MODEL_RUNNER=0").unwrap() < s.find("nohup").unwrap(),
+            "export 应在 nohup 启动之前: {s}"
+        );
+    }
+
+    #[test]
+    fn start_script_wsl2_onecat_native_exports_v1_runner_env() {
+        let mut cfg = test_cfg_fw("1cat-vllm", serde_json::json!({}));
+        cfg.mode = "native".into();
+        let s = start_script(&cfg, &test_profile());
+        assert!(s.contains("export VLLM_USE_V2_MODEL_RUNNER=0"), "script: {s}");
+    }
+
+    #[test]
+    fn start_script_no_wsl2_env_for_non_vllm() {
+        // 非 vllm 框架（sglang/fastllm/llama）不受 V2 model runner 影响，不注入 WSL2 环境变量
+        for fw in ["sglang", "fastllm", "llama-cpp"] {
+            for mode in ["native", "docker"] {
+                let mut cfg = test_cfg_fw(fw, serde_json::json!({}));
+                cfg.mode = mode.into();
+                let s = start_script(&cfg, &test_profile());
+                assert!(
+                    !s.contains("VLLM_USE_V2_MODEL_RUNNER"),
+                    "{fw}/{mode} 不应注入 vllm 环境变量: {s}"
+                );
+            }
+        }
     }
 }

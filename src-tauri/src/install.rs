@@ -57,8 +57,8 @@ fn uv_venv_setup(fw_dir: &str, venv: &str, mirror: &str) -> String {
          curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
          fi\n\
          uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
-         if [ ! -x {fw_dir}/{venv}/bin/python ]; then\n\
-         uv venv --python 3.12 {fw_dir}/{venv} 2>&1 || {{ echo \"ERROR: 创建 {venv} venv 失败\"; exit 1; }}\n\
+         if [ ! -x \"{fw_dir}/{venv}/bin/python\" ]; then\n\
+         uv venv --python 3.12 --seed \"{fw_dir}/{venv}\" 2>&1 || {{ echo \"ERROR: 创建 {venv} venv 失败\"; exit 1; }}\n\
          fi\n"
     )
 }
@@ -80,7 +80,8 @@ pub fn build_install_script(
     tool: &str,
     sudo_pass: Option<&str>,
 ) -> Result<String, AppError> {
-    let fw_dir = format!("{}/frameworks", profile.base_dir.trim_end_matches('/'));
+    // 用归一化的框架目录（~ → $HOME，双引号内可展开），自定义 baseDir 也正确
+    let fw_dir = profile.frameworks_dir();
     let onecat_repo = profile
         .onecat_repo
         .clone()
@@ -128,21 +129,21 @@ pub fn build_install_script(
               echo PY312_DONE",
         ),
         "vllm" => format!(
-            "{proxy}mkdir -p {fw_dir}\n\
+            "{proxy}mkdir -p \"{fw_dir}\"\n\
               {setup}\
-              {fw_dir}/vllm-venv/bin/python -m pip install -U {idx} 'vllm' 2>&1 \
-              || {fw_dir}/vllm-venv/bin/python -m pip install -U {idx} 'vllm' --break-system-packages 2>&1",
+              \"{fw_dir}/vllm-venv/bin/python\" -m pip install -U {idx} 'vllm' 2>&1 \
+              || \"{fw_dir}/vllm-venv/bin/python\" -m pip install -U {idx} 'vllm' --break-system-packages 2>&1",
             setup = uv_venv_setup(&fw_dir, "vllm-venv", &mirror),
         ),
         "sglang" => format!(
-            "{proxy}mkdir -p {fw_dir}\n\
+            "{proxy}mkdir -p \"{fw_dir}\"\n\
               {setup}\
-              {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' 2>&1 \
-              || {fw_dir}/sglang-venv/bin/python -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
+              \"{fw_dir}/sglang-venv/bin/python\" -m pip install -U {idx} 'sglang' 2>&1 \
+              || \"{fw_dir}/sglang-venv/bin/python\" -m pip install -U {idx} 'sglang' --break-system-packages 2>&1",
             setup = uv_venv_setup(&fw_dir, "sglang-venv", &mirror),
         ),
         "1cat-vllm" => format!(
-            "{proxy}mkdir -p {fw_dir}\n\
+            "{proxy}mkdir -p \"{fw_dir}\"\n\
               export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n\
               {mirror}\
               # 1Cat-vLLM 未发布到 PyPI，只能源码安装；预编译 wheel 仅 cp312、源码 flash-attn\n\
@@ -152,22 +153,22 @@ pub fn build_install_script(
               curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 || {{ echo \"ERROR: uv 安装失败\"; exit 1; }}\n\
               fi\n\
               uv python install 3.12 2>&1 || {{ echo \"ERROR: uv 安装 Python 3.12 失败\"; exit 1; }}\n\
-              if [ ! -x {fw_dir}/1cat-venv/bin/python ]; then\n\
-              uv venv --python 3.12 {fw_dir}/1cat-venv 2>&1 || {{ echo \"ERROR: 创建 1cat venv 失败\"; exit 1; }}\n\
+              if [ ! -x \"{fw_dir}/1cat-venv/bin/python\" ]; then\n\
+              uv venv --python 3.12 --seed \"{fw_dir}/1cat-venv\" 2>&1 || {{ echo \"ERROR: 创建 1cat venv 失败\"; exit 1; }}\n\
               fi\n\
-              cd {fw_dir}\n\
+              cd \"{fw_dir}\"\n\
               if [ -d 1Cat-vLLM ]; then cd 1Cat-vLLM && git pull; else git clone {onecat_repo_q} 1Cat-vLLM; fi\n\
-              {fw_dir}/1cat-venv/bin/python -m pip install {idx} -e . 2>&1 || {fw_dir}/1cat-venv/bin/python -m pip install {idx} -e . --break-system-packages 2>&1",
+              \"{fw_dir}/1cat-venv/bin/python\" -m pip install {idx} -e . 2>&1 || \"{fw_dir}/1cat-venv/bin/python\" -m pip install {idx} -e . --break-system-packages 2>&1",
         ),
         "fastllm" => format!(
-            "{proxy}mkdir -p {fw_dir}\n\
+            "{proxy}mkdir -p \"{fw_dir}\"\n\
               {setup}\
-              {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' 2>&1 \
-              || {fw_dir}/ftllm-venv/bin/python -m pip install -U {idx} 'ftllm' --break-system-packages 2>&1",
+              \"{fw_dir}/ftllm-venv/bin/python\" -m pip install -U {idx} 'ftllm' 2>&1 \
+              || \"{fw_dir}/ftllm-venv/bin/python\" -m pip install -U {idx} 'ftllm' --break-system-packages 2>&1",
             setup = uv_venv_setup(&fw_dir, "ftllm-venv", &mirror),
         ),
         "llama-cpp" => format!(
-            "{proxy}{deb}mkdir -p {fw_dir}\ncd {fw_dir}\n\
+            "{proxy}{deb}mkdir -p \"{fw_dir}\"\ncd \"{fw_dir}\"\n\
               if ! {{ command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1; }}; then\n\
               echo \"[toolchain] 缺少 g++/make/cmake，尝试自动安装 build-essential + cmake ...\"\n\
                if [ \"$(id -u)\" = \"0\" ]; then\n\
@@ -198,7 +199,7 @@ pub fn build_install_script(
                 .onecat_image
                 .clone()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5".into())
+                .unwrap_or_else(|| "docker.io/sssssks/1cat-vllm:latest".into())
                 .replace('\'', "'\\''");
             format!("docker pull '{img}' 2>&1")
         }
@@ -259,7 +260,7 @@ pub fn build_install_script(
         // ---------- 卸载：只移除引擎自身（venv 或 pip 包），保留其它引擎，不影响共享依赖 ----------
         "uninstall-vllm" => format!(
             "echo \"[uninstall] 删除 vllm 专用 venv（不影响其它引擎）\"\n\
-              rm -rf {fw_dir}/vllm-venv\n\
+              rm -rf \"{fw_dir}/vllm-venv\"\n\
               {proxy}{boot}echo \"[uninstall] 清理系统 python 中的 vllm（兼容旧版安装，不存在时忽略）\"\n\
               python3 -m pip uninstall -y 'vllm' 2>&1 \
               || python3 -m pip uninstall -y 'vllm' --break-system-packages 2>&1",
@@ -267,7 +268,7 @@ pub fn build_install_script(
         ),
         "uninstall-sglang" => format!(
             "echo \"[uninstall] 删除 sglang 专用 venv（不影响其它引擎）\"\n\
-              rm -rf {fw_dir}/sglang-venv\n\
+              rm -rf \"{fw_dir}/sglang-venv\"\n\
               {proxy}{boot}echo \"[uninstall] 清理系统 python 中的 sglang（兼容旧版安装，不存在时忽略）\"\n\
               python3 -m pip uninstall -y 'sglang' 2>&1 \
               || python3 -m pip uninstall -y 'sglang' --break-system-packages 2>&1",
@@ -275,20 +276,20 @@ pub fn build_install_script(
         ),
         "uninstall-1cat-vllm" => format!(
             "echo \"[uninstall] 删除 1cat 专用 venv（不影响其它引擎）\"\n\
-              rm -rf {fw_dir}/1cat-venv\n\
+              rm -rf \"{fw_dir}/1cat-venv\"\n\
               {proxy}{boot}echo \"[uninstall] 清理系统 python 中的 1cat-vllm（兼容旧版安装，不存在时忽略）\"\n\
               python3 -m pip uninstall -y '1cat-vllm' 2>&1 \
               || python3 -m pip uninstall -y '1cat-vllm' --break-system-packages 2>&1\n\
-              rm -rf {fw_dir}/1Cat-vLLM",
+              rm -rf \"{fw_dir}/1Cat-vLLM\"",
             boot = pip_bootstrap()
         ),
         "uninstall-llama-cpp" => format!(
             "echo \"[uninstall] 删除 llama.cpp 源码与构建目录（不影响其它引擎）\"\n\
-             rm -rf {fw_dir}/llama.cpp"
+             rm -rf \"{fw_dir}/llama.cpp\""
         ),
         "uninstall-fastllm" => format!(
             "echo \"[uninstall] 删除 ftllm 专用 venv（不影响其它引擎）\"\n\
-             rm -rf {fw_dir}/ftllm-venv"
+             rm -rf \"{fw_dir}/ftllm-venv\""
         ),
         other => return Err(AppError::Other(format!("未知安装项: {other}"))),
     })
@@ -316,12 +317,12 @@ pub async fn install_start(
     let profile = get_profile(&app, &profile_id)?;
     let settings = crate::settings::load_settings(&app)?;
     let script = build_install_script(&profile, &settings, &tool, sudo_password(&profile))?;
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("inst-{}", chrono::Utc::now().timestamp_millis());
     crate::applog::info("task", &format!("install_start tool={tool} profile={profile_id}"));
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 
@@ -447,7 +448,7 @@ mod tests {
         let s = build_install_script(&profile(), &d, "1cat-vllm", None).unwrap();
         assert!(s.contains("uv python install 3.12"), "1cat 未装 Python 3.12: {s}");
         assert!(s.contains("uv venv --python 3.12"), "1cat 未建 3.12 venv: {s}");
-        assert!(s.contains("1cat-venv/bin/python -m pip install"), "1cat 未装进 venv: {s}");
+        assert!(s.contains("1cat-venv/bin/python\" -m pip install"), "1cat 未装进 venv: {s}");
         assert!(!s.contains("version_info"), "1cat 不应再探测系统 Python 版本: {s}");
         // venv 必须在 git clone 之前建好（先备好 3.12 环境再拉代码编译）
         let venv = s.find("uv venv --python 3.12").unwrap();
@@ -463,7 +464,7 @@ mod tests {
         let s = build_install_script(&profile(), &d, "sglang", None).unwrap();
         assert!(s.contains("uv python install 3.12"), "sglang 未装 Python 3.12: {s}");
         assert!(s.contains("uv venv --python 3.12"), "sglang 未建 3.12 venv: {s}");
-        assert!(s.contains("sglang-venv/bin/python -m pip install"), "sglang 未装进 venv: {s}");
+        assert!(s.contains("sglang-venv/bin/python\" -m pip install"), "sglang 未装进 venv: {s}");
         // 3.12 venv 走预编译 wheel，不再需要编译回退（PYO3 稳定 ABI / cargo PATH）
         assert!(!s.contains("PYO3_USE_ABI3_FORWARD_COMPATIBILITY"), "sglang 不应再有编译回退: {s}");
         assert!(!s.contains(".cargo/bin"), "sglang 不应再依赖 cargo PATH: {s}");
@@ -480,7 +481,7 @@ mod tests {
         let s = build_install_script(&profile(), &d, "vllm", None).unwrap();
         assert!(s.contains("uv python install 3.12"), "vllm 未装 Python 3.12: {s}");
         assert!(s.contains("uv venv --python 3.12"), "vllm 未建 3.12 venv: {s}");
-        assert!(s.contains("vllm-venv/bin/python -m pip install"), "vllm 未装进 venv: {s}");
+        assert!(s.contains("vllm-venv/bin/python\" -m pip install"), "vllm 未装进 venv: {s}");
         assert!(s.contains("'vllm'"), "vllm 包名错误: {s}");
         // 不再走系统 pip（无 get-pip 引导、无 --break-system-packages 系统回退）
         assert!(!s.contains("get-pip.py"), "vllm 不应走系统 pip 引导: {s}");
@@ -489,6 +490,20 @@ mod tests {
         let u = build_install_script(&profile(), &d, "uninstall-vllm", None).unwrap();
         assert!(u.contains("rm -rf"), "vllm 卸载未删目录");
         assert!(u.contains("vllm-venv"), "vllm 卸载目录名错误");
+    }
+
+    #[test]
+    fn venv_created_with_seed_for_pip() {
+        // uv venv 默认不装 pip，后续 `venv/bin/python -m pip install` 会报
+        // "No module named pip"。所有框架的 venv 必须带 --seed 预置 pip。
+        let d = crate::settings::AppSettings::default();
+        for fw in ["vllm", "sglang", "fastllm", "1cat-vllm"] {
+            let s = build_install_script(&profile(), &d, fw, None).unwrap();
+            assert!(
+                s.contains("uv venv --python 3.12 --seed"),
+                "{fw} 的 uv venv 缺 --seed（venv 内无 pip，安装必失败）: {s}"
+            );
+        }
     }
 
     #[test]
@@ -575,7 +590,7 @@ mod tests {
         let s = build_install_script(&profile(), &d, "fastllm", None).unwrap();
         assert!(s.contains("uv python install 3.12"), "fastllm 未装 Python 3.12: {s}");
         assert!(s.contains("uv venv --python 3.12"), "fastllm 未建 3.12 venv: {s}");
-        assert!(s.contains("ftllm-venv/bin/python -m pip install"), "fastllm 未装进 venv: {s}");
+        assert!(s.contains("ftllm-venv/bin/python\" -m pip install"), "fastllm 未装进 venv: {s}");
         assert!(s.contains("'ftllm'"), "fastllm 包名错误: {s}");
         // 卸载：删整个 venv（ftllm 及其依赖都在 venv 内）
         let u = build_install_script(&profile(), &d, "uninstall-fastllm", None).unwrap();

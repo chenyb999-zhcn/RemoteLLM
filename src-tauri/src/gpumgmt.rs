@@ -381,11 +381,9 @@ pub async fn gpu_query(
     profile_id: String,
 ) -> Result<GpuQueryResult, AppError> {
     let user = get_profile_user(&app, &profile_id)?;
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
-    let out = session.run(GPU_SCRIPT).await?;
+    // 只读：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &profile_id)?;
+    let out = session.run(GPU_SCRIPT, true).await?;
     Ok(parse_gpu_query(&out.stdout, &user))
 }
 
@@ -408,11 +406,9 @@ pub async fn gpu_kill(
          sleep 3\n\
          if kill -0 {pid} 2>/dev/null; then kill -9 {pid} && echo KILL_FORCED || echo KILL9_FAIL; else echo EXITED; fi"
     );
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
-    let out = session.run(&script).await?;
+    // 变更（杀进程）：写锁独占
+    let session = crate::ssh::session_from(&state, &profile_id)?;
+    let out = session.run(&script, false).await?;
     let mut s = out.stdout;
     if !out.stderr.trim().is_empty() {
         s.push('\n');
@@ -504,7 +500,7 @@ pub async fn gpu_set_start(
         return Err(AppError::Other("该服务器 sudo 需要密码，请先输入 sudo 密码".into()));
     }
     let script = build_set_script(mode, password.as_deref(), &action, gpu, value)?;
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("gset-{}", chrono::Utc::now().timestamp_millis());
@@ -515,7 +511,7 @@ pub async fn gpu_set_start(
             gpu
         ),
     );
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 

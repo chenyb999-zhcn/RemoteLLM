@@ -90,11 +90,9 @@ pub async fn check_docker(
     state: State<'_, crate::AppState>,
     profile_id: String,
 ) -> Result<DockerStatus, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
-    let out = session.run(CHECK_SCRIPT).await?;
+    // 只读：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &profile_id)?;
+    let out = session.run(CHECK_SCRIPT, true).await?;
     let raw = out.stdout.as_str();
 
     let version = section(raw, "VER")
@@ -128,12 +126,10 @@ pub async fn list_docker_images(
     state: State<'_, crate::AppState>,
     profile_id: String,
 ) -> Result<Vec<LocalImage>, AppError> {
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
+    // 只读：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(&state, &profile_id)?;
     let cmd = "docker images --format '{{.Repository}}:{{.Tag}}|{{.Size}}' 2>/dev/null";
-    let out = session.run(cmd).await?;
+    let out = session.run(cmd, true).await?;
     if out.exit_code != 0 {
         return Err(AppError::Other(
             out.stderr.trim().to_string().lines().next().unwrap_or("docker images 执行失败").to_string(),
@@ -173,11 +169,9 @@ echo "TEST_IMAGE=$img"
 timeout 60 docker run --rm --gpus all "$img" nvidia-smi -L 2>&1
 echo "EXIT=$?"
 "#;
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(&profile_id) else {
-        return Err(AppError::NotConnected(profile_id));
-    };
-    let out = session.run(SCRIPT).await?;
+    // 变更（会拉起临时容器）：写锁独占
+    let session = crate::ssh::session_from(&state, &profile_id)?;
+    let out = session.run(SCRIPT, false).await?;
     let mut s = out.stdout;
     if !out.stderr.trim().is_empty() {
         s.push('\n');
@@ -299,11 +293,9 @@ pub fn build_authorize_script(mode: SudoMode, password: Option<&str>) -> String 
 
 pub(crate) async fn probe_sudo_mode(state: &State<'_, crate::AppState>, profile_id: &str) -> Result<SudoMode, AppError> {
     let script = "[ \"$(id -u)\" = 0 ] && echo RL_ROOT; sudo -n true 2>/dev/null && echo RL_NOPASS";
-    let mut conns = state.conns.lock().await;
-    let Some(session) = conns.get_mut(profile_id) else {
-        return Err(AppError::NotConnected(profile_id.to_string()));
-    };
-    let out = session.run(script).await?;
+    // 只读：读锁，与其它只读命令并发
+    let session = crate::ssh::session_from(state, profile_id)?;
+    let out = session.run(script, true).await?;
     if out.stdout.contains("RL_ROOT") {
         Ok(SudoMode::Root)
     } else if out.stdout.contains("RL_NOPASS") {
@@ -336,12 +328,12 @@ pub async fn docker_install_start(
     }
     let settings = crate::settings::load_settings(&app)?;
     let script = build_install_script(mode, password.as_deref(), &settings.deb_mirror);
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("dinst-{}", chrono::Utc::now().timestamp_millis());
     crate::applog::info("task", &format!("docker_install profile={profile_id}"));
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 
@@ -358,12 +350,12 @@ pub async fn docker_authorize_start(
         return Err(AppError::Other("该服务器 sudo 需要密码，请先输入 sudo 密码".into()));
     }
     let script = build_authorize_script(mode, password.as_deref());
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("dauth-{}", chrono::Utc::now().timestamp_millis());
     crate::applog::info("task", &format!("docker_authorize profile={profile_id}"));
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 
@@ -438,7 +430,7 @@ pub async fn docker_proxy_start(
         return Err(AppError::Other("该服务器 sudo 需要密码，请先输入 sudo 密码".into()));
     }
     let script = build_proxy_script(mode, password.as_deref(), proxy_url.as_deref())?;
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id));
     }
     let task_id = format!("dproxy-{}", chrono::Utc::now().timestamp_millis());
@@ -449,7 +441,7 @@ pub async fn docker_proxy_start(
             proxy_url.as_deref().unwrap_or("<remove>")
         ),
     );
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 
@@ -492,13 +484,13 @@ pub async fn docker_pull_start(
     image: String,
 ) -> Result<String, AppError> {
     validate_image(&image)?;
-    if !state.conns.lock().await.contains_key(&profile_id) {
+    if !crate::ssh::is_connected(&state, &profile_id) {
         return Err(AppError::NotConnected(profile_id.clone()));
     }
     let script = format!("docker pull '{}' 2>&1", shq(&image.trim().to_string()));
     let task_id = format!("dpull-{}", chrono::Utc::now().timestamp_millis());
     crate::applog::info("task", &format!("docker_pull profile={profile_id} image={image}"));
-    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone());
+    crate::ssh::SshSession::spawn_stream(app, profile_id, script, task_id.clone(), false);
     Ok(task_id)
 }
 

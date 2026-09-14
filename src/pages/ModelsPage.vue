@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   NButton,
   NCard,
@@ -60,6 +60,37 @@ const searched = ref(false);
 const localModels = ref<LocalModel[]>([]);
 const localLoading = ref(false);
 const parserLibs = ref<ParserLibsStatus | null>(null);
+
+// ---------- 本地列表 localStorage 缓存：先渲染缓存（秒开），后台扫描完静默替换 ----------
+const LOCAL_CACHE_PREFIX = "remotellm.localModels.";
+/** 当前屏幕上展示的是哪个档案的列表（缓存或新数据） */
+const localCacheProfile = ref<string | null>(null);
+
+function readLocalCache(pid: string): LocalModel[] | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_CACHE_PREFIX + pid);
+    if (!raw) return null;
+    const models = (JSON.parse(raw) as { models?: unknown })?.models;
+    return Array.isArray(models) ? (models as LocalModel[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalCache(pid: string, models: LocalModel[]) {
+  try {
+    localStorage.setItem(LOCAL_CACHE_PREFIX + pid, JSON.stringify({ ts: Date.now(), models }));
+  } catch {
+    /* 配额超限等异常：缓存失败不影响主流程 */
+  }
+}
+
+/** 切到某档案时优先渲染其缓存；无缓存则清空，避免串档案 */
+function hydrateLocalCache(pid: string) {
+  if (localCacheProfile.value === pid) return;
+  localModels.value = readLocalCache(pid) ?? [];
+  localCacheProfile.value = pid;
+}
 
 const dlShow = ref(false);
 const dlForm = reactive({
@@ -183,7 +214,13 @@ async function refreshLocal() {
   if (!id || localLoading.value) return;
   localLoading.value = true;
   try {
-    localModels.value = await api.listLocalModels(id);
+    const models = await api.listLocalModels(id);
+    writeLocalCache(id, models);
+    // 扫描期间档案可能已切换：数据仍写入该档案缓存，但屏幕只展示当前档案
+    if (current.value?.id === id) {
+      localModels.value = models;
+      localCacheProfile.value = id;
+    }
   } catch (e: any) {
     message.error(t("models.localFailed", { msg: e?.message ?? JSON.stringify(e) }));
   } finally {
@@ -409,12 +446,25 @@ const localColumns = computed<DataTableColumns<LocalModel>>(() => [
 ]);
 
 onMounted(() => {
+  const id = current.value?.id;
+  if (id) hydrateLocalCache(id);
   refreshLocal();
   refreshParserLibs();
   settings.load().then(() => {
     activeTab.value = settings.value.defaultModelSource === "huggingface" ? "huggingface" : "modelscope";
   });
 });
+
+// 页面打开期间切换档案：先渲染新档案缓存（或清空），再后台刷新，避免串档案
+watch(
+  () => current.value?.id,
+  (pid) => {
+    if (!pid) return;
+    hydrateLocalCache(pid);
+    refreshLocal();
+    refreshParserLibs();
+  },
+);
 
 onBeforeUnmount(() => {
   cancelTask.value?.();

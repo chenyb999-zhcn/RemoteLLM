@@ -74,10 +74,10 @@ export const FW_META: Record<string, FwMeta> = {
   "1cat-vllm": {
     label: "1Cat-vLLM",
     labelEn: "1Cat-vLLM",
-    desc: "vLLM fork（含 sm70/V100 支持）",
-    descEn: "vLLM fork (with sm70/V100 support)",
+    desc: "vLLM fork（含 sm70/V100 支持，V100GPU首选）",
+    descEn: "vLLM fork (with sm70/V100 support, preferred for V100 GPU)",
     defaultPort: 8000,
-    dockerImage: "ghcr.io/chenyb999-zhcn/1cat-vllm:1.5",
+    dockerImage: "docker.io/sssssks/1cat-vllm:latest",
     // 1Cat-vLLM 预编译 wheel 只装 `vllm` 入口（无 sglang/llama-server），bin 默认 vllm
     params: onecatParams,
     tabs: [...vllmTabs, ...onecatTabs],

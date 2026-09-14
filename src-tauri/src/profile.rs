@@ -73,6 +73,10 @@ impl ServerProfile {
     pub fn logs_dir(&self) -> String {
         shell_path(&format!("{}/logs", self.root()))
     }
+    /// 框架安装根目录（venv/llama.cpp 等一键安装产物放这里）
+    pub fn frameworks_dir(&self) -> String {
+        shell_path(&format!("{}/frameworks", self.root()))
+    }
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
@@ -179,7 +183,9 @@ pub async fn save_profile(
     }
     save_store(&app, &profiles)?;
     // 配置可能变了，断开旧连接
-    let _ = state.conns.lock().await.remove(&id);
+    if let Ok(mut conns) = state.conns.lock() {
+        conns.remove(&id);
+    }
     Ok(profiles)
 }
 
@@ -192,7 +198,9 @@ pub async fn delete_profile(
     let mut profiles = load_profiles(&app)?;
     profiles.retain(|p| p.id != id);
     save_store(&app, &profiles)?;
-    let _ = state.conns.lock().await.remove(&id);
+    if let Ok(mut conns) = state.conns.lock() {
+        conns.remove(&id);
+    }
     Ok(profiles)
 }
 

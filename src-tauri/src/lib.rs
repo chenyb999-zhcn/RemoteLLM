@@ -18,7 +18,10 @@ use std::collections::HashMap;
 use tauri::Manager;
 
 pub struct AppState {
-    pub conns: tokio::sync::Mutex<HashMap<String, ssh::SshSession>>,
+    /// 连接表：profile_id -> 共享会话（Arc，命令执行期间只短暂持表锁）。
+    /// 用 std Mutex（从不跨 await 持有），命令并发由每档案的 CmdGate 控制
+    /// （只读并发 / 变更独占），见 ssh::SshSession。
+    pub conns: std::sync::Mutex<HashMap<String, std::sync::Arc<ssh::SshSession>>>,
     /// 本地模型解析结果缓存（profile_id -> 指纹+列表），轻扫指纹一致时避免全量头部解析
     pub model_cache: std::sync::Mutex<HashMap<String, models::ModelCacheEntry>>,
 }
@@ -29,7 +32,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(AppState {
-            conns: tokio::sync::Mutex::new(HashMap::new()),
+            conns: std::sync::Mutex::new(HashMap::new()),
             model_cache: std::sync::Mutex::new(HashMap::new()),
         })
         .setup(|app| {
